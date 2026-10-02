@@ -9,15 +9,26 @@
   started by `"start": "node server.js"` has no importer by construction and was reported dead at
   confidence 1.0, with everything only it imports reported as `all_importers_dead`. The deletion
   investigator then read a name that server imports as imported only by an unreachable file. The reader
-  also existed twice, one copy in each tool, byte for byte; it is one function in `tools/_entry_points.py`
-  now. For each script it takes the file a runner executes (`node`, `nodemon`, `ts-node`, `tsx`, `bun`,
-  `deno`, `babel-node` and a few more), through `npx`, `cross-env` and environment assignments, plus a
-  module named by `--require`, `--import` or `--loader`. A file that is only NAMED in a script declares
-  nothing: `eslint legacy.js` and the second argument of `node build.js input.js` stay reported, and a
-  test asserts that as firmly as the fix. Measured on the 11 repositories indexed on this machine that
-  hold a `package.json`: 40 files become roots, each one the argument of a runner
-  (`evidence/l102_measure.txt`). Still reported dead, and still wrong: `index.js` in a tree with no
-  `package.json`, and a Python script with no main guard (LEDGER L-102, L-111).
+  also existed twice, one copy in each tool with the same logic; it is one function in
+  `tools/_entry_points.py` now. For each script it takes the file a runner executes (`node`, `nodemon`,
+  `ts-node`, `tsx`, `bun`, `deno`, `babel-node` and a few more), through `npx`, `cross-env` and
+  environment assignments, plus a module named by `--require`, `--import` or `--loader`.
+  A wrong root is the worse error here, because it removes a dead file from the report with no symptom,
+  so every doubt resolves to "declares nothing": a file named to a linter or a test runner, the
+  arguments after the entry (`node build.js input.js`), a flag's value (`nodemon --watch src`), inline
+  code and checks (`node -e`, `--check`, `--test`), a subcommand that executes no file (`deno lint`,
+  `bun build x.ts`), a quoted string, and a directory that has its own `package.json` (`node .`, where
+  `main` decides). One case can still root a file that is not the entry: a value-taking flag this
+  reader does not know has its value read as the entry, when that value is an indexed file (L-111).
+  What moves besides the two lists: `get_dead_code_v2` counts script-run files in
+  `entry_points_detected` and lists them in `_meta.package_json_entries`, so a JS repository whose only
+  roots are script-run files leaves the zero-entry-point path (`diagnostics.degraded` and its
+  `framework_warning`), and `get_repo_health`'s `dead_code_pct` follows. `check_delete_safe`, the
+  deletion investigator, `digest` and `assemble_task_context` read these tools and follow too.
+  Measured on the 11 repositories indexed on this machine that hold a `package.json`: 40 files become
+  roots, each the first argument of a runner (`evidence/l102_measure.txt`). Still reported dead, and
+  still wrong: `index.js` in a tree with no `package.json`, and a Python script with no main guard
+  (LEDGER L-111).
 
 ## [1.108.327] - 2026-10-02 - a local model path is refused when the installed sentence-transformers would run its code
 

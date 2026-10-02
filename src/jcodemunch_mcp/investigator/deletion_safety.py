@@ -116,9 +116,9 @@ def _split_importers_by_liveness(
     never in its answer, so a test importing the name is a live importer.
 
     ⚠ This inherits the authority's gaps as well as its roots. It does not
-    recognise a root-level `tests/` directory (LEDGER L-101) or an undeclared
-    non-Python entry point such as `index.js` with no `package.json` (L-102),
-    and both still read as dead here. Fix them THERE.
+    recognise an undeclared non-Python entry point such as `index.js` with
+    no `package.json` (LEDGER L-111), which still reads as dead here. Fix it
+    THERE.
     """
     try:
         from ..tools.find_dead_code import find_dead_code  # noqa: PLC0415

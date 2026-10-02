@@ -173,88 +173,170 @@ _SCRIPT_WRAPPERS = frozenset({
     "yarn", "pnpm", "exec", "dlx", "--",
 })
 # Flags whose VALUE is a module the runner loads before the entry file.
-_PRELOAD_FLAGS = frozenset({"-r", "--require", "--import", "--loader", "--experimental-loader"})
-# Words a runner takes before the file: `bun run x.ts`, `tsx watch x.ts`, `deno run x.ts`.
-_RUNNER_SUBCOMMANDS = frozenset({"run", "watch", "start", "exec", "x"})
+_PRELOAD_FLAGS = frozenset({"-r", "--require", "--import", "--loader", "--experimental-loader", "--preload"})
+# Flags that take a value in the NEXT token. ⚠⚠ The value is not the entry:
+# `nodemon --watch src server.js` runs `server.js`, and reading `src` as the
+# entry rooted `src/index.ts`. A flag missing from this set has its value read
+# as the entry, which roots a file only if that value resolves to one; add the
+# flag here when that is seen.
+_VALUE_FLAGS = frozenset({
+    # node
+    "-C", "--conditions", "--env-file", "--watch-path", "--inspect-port", "--title",
+    "--input-type", "--max-old-space-size", "--stack-size", "--diagnostic-dir",
+    # nodemon, ts-node-dev
+    "-w", "--watch", "-e", "--ext", "-i", "--ignore", "--config", "-d", "--delay",
+    "-s", "--signal", "--cwd", "--ignore-watch", "--debounce", "--interval",
+    # ts-node, tsx
+    "-P", "--project", "--compiler", "-O", "--compiler-options", "-I", "--dir",
+    "--scope-dir", "--tsconfig", "--exclude", "--include",
+    # deno, bun
+    "-c", "--import-map", "--lock", "--cert", "--location", "--seed", "--v8-flags",
+    "-d", "--define", "-l", "--tsconfig-override", "--port", "--env",
+})
+# With one of these the runner executes no file argument: inline code, a syntax
+# check, the test runner, or (`nodemon --exec`) another command entirely.
+_NO_ENTRY_FLAGS = frozenset({"--eval", "--print", "-p", "--check", "--test", "-x", "--exec", "--version", "--help", "-h", "-v"})
+# node reads -e as --eval and -c as --check; nodemon and deno read them as value flags.
+_NODE_FAMILY = frozenset({"node", "nodejs", "ts-node", "ts-node-esm", "babel-node", "tsx"})
+_NODE_NO_ENTRY_FLAGS = frozenset({"-e", "-c"})
+# Words that come before the file and mean "execute it".
+_EXEC_SUBCOMMANDS = {"bun": frozenset({"run"}), "deno": frozenset({"run"}), "tsx": frozenset({"watch"})}
+# Runners that take a subcommand: any OTHER bare word in that position is a
+# subcommand that executes no file argument (`deno lint`, `bun build x.ts`,
+# `bun test`). Only a path-shaped first argument is an entry there.
+_SUBCOMMAND_RUNNERS = frozenset({"bun", "deno"})
+# `bun run build` runs the SCRIPT named build before any file of that name.
+_SCRIPT_NAME_RUNNERS = frozenset({"bun"})
 _ENV_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
-_SEGMENT_SPLIT = re.compile(r"&&|\|\||[;|&\n]")
+_OPERATORS = frozenset({"&&", "||", ";", "|", "&", "|&", ";;"})
 
 
 def _resolve_script_path(pkg_dir: str, token: str, source_files: frozenset) -> Optional[str]:
-    """The indexed file a script argument names, relative to its package, or None."""
-    joined = posixpath.normpath(posixpath.join(pkg_dir, token.replace("\\", "/"))) if pkg_dir else (
-        posixpath.normpath(token.replace("\\", "/"))
-    )
+    """The indexed file a script argument names, relative to its package, or None.
+
+    A directory argument (`node src`, `node .`) loads that directory's
+    `package.json` `main` when it has one, which the field reader already
+    handles, so a directory holding a `package.json` resolves to nothing here.
+    Otherwise it loads `index.*`.
+    """
+    token = token.replace("\\", "/")
+    joined = posixpath.normpath(posixpath.join(pkg_dir, token)) if pkg_dir else posixpath.normpath(token)
     if joined.startswith("..") or joined.startswith("/"):
         return None
     if joined == ".":
         joined = ""
+    if joined:
+        for suffix in _JS_ENTRY_SUFFIXES:
+            if not suffix.startswith("/") and joined + suffix in source_files:
+                return joined + suffix
+    if (f"{joined}/package.json" if joined else "package.json") in source_files:
+        return None
     for suffix in _JS_ENTRY_SUFFIXES:
-        trial = (joined + suffix).lstrip("/")
-        if trial in source_files:
-            return trial
+        if suffix.startswith("/"):
+            trial = (joined + suffix).lstrip("/")
+            if trial in source_files:
+                return trial
     return None
 
 
-def _script_entries(command: str, script_names: frozenset, pkg_dir: str, source_files: frozenset) -> set[str]:
+def _script_segments(command: str) -> list[list[str]]:
+    """The command split into simple commands, with quoting read BEFORE the operators.
+
+    An unbalanced quote returns nothing: a command that cannot be read declares nothing.
+    """
+    lexer = shlex.shlex(command.replace("\\", "/"), posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return []
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        if token in _OPERATORS or (token and set(token) <= set("();<>|&")):
+            segments.append([])
+        else:
+            segments[-1].append(token)
+    return [s for s in segments if s]
+
+
+def _script_entries(
+    command: str, script_names: frozenset, pkg_dir: str, source_files: frozenset, _depth: int = 0
+) -> set[str]:
     """Files one `scripts` command runs: per runner invocation, its preloads and its entry file.
 
     The entry is the first plain argument, when it resolves to an indexed
     file. If it does not resolve (`node dist/build.js input.js`, with `dist/`
-    not indexed) the command declares nothing here: the arguments after the
-    entry belong to the program. An argument that directly follows a flag
-    may be that flag's value (`nodemon --watch src server.js`), so it is
-    taken only when there is no plain argument at all (`ts-node-dev --respawn
-    src/index.ts`).
+    not indexed) the command declares nothing: the arguments after the entry
+    belong to the program. A flag in `_VALUE_FLAGS` consumes the next token.
+
+    ⚠⚠ Every doubt resolves to "declares nothing". A missed root leaves a live
+    file reported, which the reader can see; a wrong root removes a dead file
+    from the report, which nobody can (#569).
     """
     found: set[str] = set()
-    for segment in _SEGMENT_SPLIT.split(command):
-        try:
-            tokens = shlex.split(segment.replace("\\", "/"))
-        except ValueError:
-            tokens = segment.split()
+    for tokens in _script_segments(command):
         i = 0
-        while i < len(tokens) and (_ENV_ASSIGNMENT.match(tokens[i]) or tokens[i] in _SCRIPT_WRAPPERS):
+        while i < len(tokens) and (
+            _ENV_ASSIGNMENT.match(tokens[i]) or tokens[i] in _SCRIPT_WRAPPERS or tokens[i].startswith("-")
+        ):
             i += 1
-        if i >= len(tokens) or tokens[i].rsplit("/", 1)[-1] not in _SCRIPT_RUNNERS:
+        if i >= len(tokens):
             continue
-        sure: Optional[str] = None
-        maybe: Optional[str] = None
-        after_flag = False
-        plain_seen = False
+        runner = tokens[i].rsplit("/", 1)[-1]
+        if runner not in _SCRIPT_RUNNERS:
+            continue
         args = tokens[i + 1:]
+        no_entry = _NO_ENTRY_FLAGS | (_NODE_NO_ENTRY_FLAGS if runner in _NODE_FAMILY else frozenset())
+        value_flags = _VALUE_FLAGS - no_entry
+        preloads: set[str] = set()
+        entry: Optional[str] = None
+        declares = True
+        subcommand_open = runner in _SUBCOMMAND_RUNNERS or runner in _EXEC_SUBCOMMANDS
         j = 0
         while j < len(args):
             arg = args[j]
             j += 1
-            if arg.startswith("-"):
-                flag, _, value = arg.partition("=")
+            if arg.startswith("-") and arg != "-":
+                flag, eq, value = arg.partition("=")
+                if flag in ("-x", "--exec") and runner in ("nodemon", "ts-node-dev"):
+                    # The command nodemon runs instead of a file argument.
+                    if not eq and j < len(args):
+                        value = args[j]
+                    if value and _depth < 2:
+                        found |= _script_entries(value, script_names, pkg_dir, source_files, _depth + 1)
+                    declares = False
+                    break
+                if flag in no_entry:
+                    declares = False
+                    break
                 if flag in _PRELOAD_FLAGS:
-                    if not value and j < len(args):
+                    if not eq and j < len(args):
                         value = args[j]
                         j += 1
                     hit = _resolve_script_path(pkg_dir, value, source_files) if value else None
                     if hit:
-                        found.add(hit)
-                    after_flag = False
-                else:
-                    after_flag = not value
+                        preloads.add(hit)
+                elif flag in value_flags and not eq:
+                    j += 1
                 continue
-            was_after_flag, after_flag = after_flag, False
-            if arg in _RUNNER_SUBCOMMANDS:
-                continue
-            hit = _resolve_script_path(pkg_dir, arg, source_files)
-            if was_after_flag:
-                maybe = maybe or hit
-                continue
-            if arg in script_names and "/" not in arg and "." not in arg:
-                hit = None  # `bun run build`: a script's name, not a path
-            sure = hit
-            plain_seen = True
+            bare = "/" not in arg and "." not in arg
+            if subcommand_open:
+                subcommand_open = False
+                if arg in _EXEC_SUBCOMMANDS.get(runner, ()):
+                    continue
+                if bare and runner in _SUBCOMMAND_RUNNERS:
+                    declares = False  # `deno lint`, `bun build x.ts`, `bun test`
+                    break
+            if bare and runner in _SCRIPT_NAME_RUNNERS and arg in script_names:
+                declares = False  # `bun run build`: the script, not a file
+                break
+            entry = _resolve_script_path(pkg_dir, arg, source_files)
             break
-        entry = sure if plain_seen else maybe
-        if entry:
-            found.add(entry)
+        if declares:
+            found |= preloads
+            if entry:
+                found.add(entry)
     return found
 
 
