@@ -235,12 +235,22 @@ _SCRIPT_RUNNERS = {
     ),
     "ts-node": _TS_NODE_SPEC,
     "ts-node-esm": _TS_NODE_SPEC,
+    # ts-node-dev's own parser (minimist, `lib/bin.js` in 2.0.0) and not ts-node's
+    # table: it knows no `--esm`, `--swc`, `--inspect` or camelCase spelling, and
+    # a flag it does not know takes the next word or goes to node and fails.
     "ts-node-dev": _spec(
-        _TS_NODE_FLAGS | {
-            "--respawn", "--poll", "--clear", "--cls", "--notify", "--no-notify", "--inspect", "--inspect-brk",
-            "--rs", "--deps", "--exit-child", "--quiet", "-q", "--debug",
-        },
-        _TS_NODE_VALUE | {"--watch", "--ignore-watch", "--debounce", "--interval"},
+        frozenset({
+            "--emit", "--files", "-T", "--transpile-only", "--prefer-ts-exts", "--prefer-ts", "--log-error",
+            "--skip-project", "--skip-ignore", "-H", "--compiler-host", "-s", "--script-mode", "--scope",
+            "--deps", "--all-deps", "--dedupe", "--fork", "--exec-check", "--debug", "--poll", "--respawn",
+            "--notify", "--no-notify", "--tree-kill", "--clear", "--cls", "--exit-child",
+            "--error-recompile", "--quiet", "--rs",
+        }),
+        frozenset({
+            "-C", "--compiler", "-P", "--project", "-I", "--ignore", "-D", "--ignore-diagnostics",
+            "-O", "--compiler-options", "--scopeDir", "--transpiler", "--deps-level", "--compile-timeout",
+            "--ignore-watch", "--interval", "--debounce", "--watch", "--cache-directory",
+        }),
         frozenset({"-r", "--require"}), suffixes=_TS,
     ),
     "nodemon": _spec(
@@ -259,9 +269,12 @@ _SCRIPT_RUNNERS = {
         frozenset({"--presets", "--plugins", "--extensions", "-x", "--config-file", "--ignore", "--only", "--env-name", "--root-mode"}),
         frozenset({"-r", "--require"}),
     ),
+    # bun takes a config file only as `--config=FILE` and deno v8 flags only as
+    # `--v8-flags=...` (bun 1.4.2 and deno 2.9.6, run): the word after the bare
+    # flag is the file they execute, so both are no-value flags here.
     "bun": _spec(
-        frozenset({"--watch", "--hot", "--smol", "--bun", "-b", "--silent", "--inspect", "--inspect-brk", "--inspect-wait", "--no-install"}),
-        frozenset({"-c", "--config", "--env-file", "-d", "--define", "-l", "--loader", "--tsconfig-override", "--port", "--conditions"}),
+        frozenset({"--watch", "--hot", "--smol", "--bun", "-b", "--silent", "--inspect", "--inspect-brk", "--inspect-wait", "--no-install", "-c", "--config"}),
+        frozenset({"--env-file", "-d", "--define", "-l", "--loader", "--tsconfig-override", "--port", "--conditions"}),
         frozenset({"-r", "--preload", "--require", "--import"}),
         exec_sub=frozenset({"run"}), suffixes=("",),
     ),
@@ -269,9 +282,9 @@ _SCRIPT_RUNNERS = {
         frozenset({
             "-A", "--allow-all", "--watch", "--no-check", "--check", "--unstable", "--no-lock", "--no-remote",
             "--no-npm", "--cached-only", "-q", "--quiet", "--no-prompt", "-r", "--reload", "--frozen",
-            "--inspect", "--inspect-brk",
+            "--inspect", "--inspect-brk", "--v8-flags",
         }),
-        frozenset({"-c", "--config", "--import-map", "--lock", "--cert", "--location", "--seed", "--v8-flags", "-L", "--log-level"}),
+        frozenset({"-c", "--config", "--import-map", "--lock", "--cert", "--location", "--seed", "-L", "--log-level"}),
         exec_sub=frozenset({"run"}), suffixes=("",),
         prefixes=("--allow-", "--deny-", "--unstable-"),
     ),
@@ -288,6 +301,7 @@ _CHDIR_COMMANDS = frozenset({"cd", "pushd", "popd", "chdir"})
 _SHELL_WORDS = frozenset({
     "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac",
     "{", "}", "!", "function", "builtin", "command", "eval", "source", ".", "set", "export",
+    "exit", "exec", "return", "alias", "unalias", "trap", "unset", "shift", "break", "continue",
 })
 
 
@@ -331,7 +345,7 @@ def _resolve_script_path(
 _COMMAND_TEXT = re.compile(r"[A-Za-z0-9_ ./:=@,+\-&|;\"'\\]*")
 # Inside quotes, nothing that could be an operator.
 _QUOTED = re.compile(r"\"([^\"]*)\"|'([^']*)'")
-_QUOTED_TEXT = re.compile(r"[A-Za-z0-9_ ./:=@,+\-]*")
+_QUOTED_TEXT = re.compile(r"[A-Za-z0-9_ ./:@,+\-]*")
 # A backslash is a path separator and nothing else: inside a word, before a
 # name character. At the start of a word (`\cd`) or before a quote, a space or
 # an operator it is an escape, and the command is not read.

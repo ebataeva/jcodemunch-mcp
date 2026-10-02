@@ -27,10 +27,14 @@
   keyword, any other character a shell interprets (`$`, `*`, `?`, `~`, `#`, `%`, a bracket, a newline)
   anywhere in the command, and a directory that has its own `package.json` (`node .`,
   where `main` decides). The cost is missed roots, which stay visible in the report; L-111 lists them.
-  The known ways left to root a wrong file are a table that is wrong about a flag (one listed as
-  taking no value that takes one; a review found one, `node --env-file`, by running node, and only
-  node's flags were run) and shell syntax made of allowed characters that the lexer reads differently
-  from a shell; none of the second kind is known.
+  The known ways left to root a wrong file are a table that is wrong about a flag, in either
+  direction, and shell syntax made of allowed characters that the lexer reads differently from a
+  shell. Reviews found the first kind three times by running the runner (`node --env-file` takes the
+  next word; `bun --config` and `deno run --v8-flags` do not), and ts-node-dev had been given
+  ts-node's flags, which its own parser does not know. The no-value and value flags of nodemon,
+  ts-node, ts-node-dev, tsx, babel-node, bun and deno have now been run against the installed binary,
+  and most of node's; electron and pm2-runtime have not been run. Two contrived commands of the second kind still root a file (`true ||
+  node x.js`, `./tools/node x.js`); L-111 records them.
   What moves besides the two lists: `get_dead_code_v2` counts script-run files in
   `entry_points_detected` and lists them in `_meta.package_json_entries`, so a JS repository whose only
   roots are script-run files leaves the zero-entry-point path (`diagnostics.degraded` and its
