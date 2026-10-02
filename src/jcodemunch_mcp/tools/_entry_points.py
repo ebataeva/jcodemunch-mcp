@@ -199,7 +199,7 @@ _NODE_VALUE = frozenset({"-C", "--conditions", "--watch-path", "--inspect-port",
 _NODE_PRELOAD = frozenset({"-r", "--require", "--import", "--loader", "--experimental-loader"})
 _TS_NODE_FLAGS = frozenset({
     "--files", "-T", "--transpile-only", "--transpileOnly", "--esm", "--swc", "-H", "--compiler-host",
-    "--pretty", "--skip-project", "--skipProject", "--skip-ignore", "--prefer-ts-exts", "--log-error",
+    "--skip-project", "--skipProject", "--skip-ignore", "--prefer-ts-exts", "--log-error",
     "--emit", "--type-check", "--typeCheck",
 })
 _TS_NODE_VALUE = frozenset({
