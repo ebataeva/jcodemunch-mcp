@@ -302,6 +302,105 @@ def test_a_directory_argument_defers_to_that_directorys_manifest():
     assert _roots("node .", files=files, own_main=False) == {"index.js"}  # our manifest names no main
     assert _roots("node ./tools", files=files, own_main=False) == set()  # tools' own manifest decides
 
+# ── Review round 5: what the allowlist trusts ────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "node --env-file .env server.js",  # node reads the next token as the value (measured on node 24)
+        "node --unhandled-rejections strict server.js",
+        "npx --yes nodemon server.js",
+        "cross-env-shell NODE_ENV=production node server.js",
+        "false || node server.js",
+        "test -f x && node server.js",
+        "node legacy.ts ; node server.js",  # an entry that is not indexed, then one that is
+    ],
+)
+def test_more_forms_that_run_the_server(command):
+    assert _roots(command) == {"server.js"}, command
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "node --env-file legacy.js server.js",  # a value that is itself a runnable file: doubt
+        # a directory change the first word does not show
+        "FOO=1 cd lib && node server.js",
+        "CDPATH=. cd lib && node server.js",
+        "\\cd lib && node server.js",
+        "popd; node server.js",
+        # a comment, and an operator that is only a quoted string
+        "true # && node server.js",
+        'echo "&&" node server.js',
+        'echo ";" node server.js',
+        "echo '|' node server.js",
+        # shell words anywhere in the command, behind an assignment too
+        "eval node server.js",
+        "source env.sh; node server.js",
+        "export A=1; node server.js",
+        "set -e; node server.js",
+        "A=1 eval node server.js",
+        "for f in a b; do node server.js; done",
+        "while true; do node server.js; done",
+        "while true; do cd lib; done; node server.js",
+        "for d in lib; do cd lib; done; node server.js",
+        "node server.js < input.txt",
+        # expansions and rewrites
+        "node server\\ extra.js",
+        "node ./$D/../server.js",
+        "node lib/$D/../../server.js",
+        "node ${ENTRY:-server.js}",
+        "node src/*.ts",
+        "node ~/server.js",
+        "node %CD%/server.js",
+        "node `which server.js`",
+        "FOO=$HOME node server.js",
+        # electron has no inspect word
+        "electron inspect server.js",
+    ],
+)
+def test_more_doubts_declare_nothing(command):
+    assert _roots(command) == set(), command
+
+
+def test_each_runner_appends_only_its_own_extensions():
+    files = frozenset({"package.json", "worker.ts", "job.js"})
+    for runner in ("node", "nodejs", "electron", "nodemon", "babel-node", "pm2-runtime"):
+        assert _roots(f"{runner} ./worker", files=files) == set(), runner
+        assert _roots(f"{runner} ./job", files=files) == {"job.js"}, runner
+    for runner in ("ts-node", "ts-node-esm", "ts-node-dev", "tsx"):
+        assert _roots(f"{runner} ./worker", files=files) == {"worker.ts"}, runner
+
+
+# The flags that take their value in the NEXT token, written out here and not
+# read from the table: moving one into a runner's `flags` set makes the value
+# (a bare word below) end the command, and this fails. This is the table error
+# that can root a wrong file, so every entry is pinned.
+VALUE_FLAGS = {
+    "node": ["-C", "--conditions", "--watch-path", "--inspect-port", "--title", "--input-type", "--env-file", "--unhandled-rejections"],
+    "electron": ["--conditions", "--env-file"],
+    "tsx": ["--tsconfig", "--ignore", "--include", "--exclude", "--env-file", "--conditions"],
+    "ts-node": ["-P", "--project", "-C", "--compiler", "-O", "--compiler-options", "--compilerOptions", "-I", "--ignore",
+                "--scope-dir", "--scopeDir", "-D", "--ignore-diagnostics", "--transpiler"],
+    "ts-node-dev": ["--watch", "--ignore-watch", "--debounce", "--interval", "-P", "--project"],
+    "nodemon": ["-w", "--watch", "-e", "--ext", "-i", "--ignore", "--config", "-d", "--delay", "-s", "--signal",
+                "-P", "--polling-interval"],
+    "babel-node": ["--presets", "--plugins", "--extensions", "-x", "--config-file", "--ignore", "--only", "--env-name",
+                   "--root-mode"],
+    "bun": ["-c", "--config", "--env-file", "-d", "--define", "-l", "--loader", "--tsconfig-override", "--port",
+            "--conditions"],
+    "deno run": ["-c", "--config", "--import-map", "--lock", "--cert", "--location", "--seed", "--v8-flags", "-L",
+                 "--log-level"],
+}
+
+
+@pytest.mark.parametrize("runner,flag", [(r, f) for r, flags in VALUE_FLAGS.items() for f in flags])
+def test_a_value_flag_consumes_its_value_for_its_runner(runner, flag):
+    assert _roots(f"{runner} {flag} somevalue ./server.js") == {"server.js"}, (runner, flag)
+    # and the value is never the entry: a runnable file there is a doubt, not a root
+    assert _roots(f"{runner} {flag} ./legacy.js ./server.js") == set(), (runner, flag)
+
 
 # ── The reader, from manifest text (no index build) ──────────────────────────
 

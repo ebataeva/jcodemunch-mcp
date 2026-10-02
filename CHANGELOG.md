@@ -20,10 +20,11 @@
   named by `--require`, `--import` or `--loader` is a root when it is a relative path. Everything else
   declares nothing: a file named to a linter or a test runner, the arguments after the entry, a flag
   the table does not know, a bare word (`deno lint`, `bun run build`, `node server`), any other wrapper
-  (`yarn`, `pnpm --filter`, `sudo`), a changed directory (`cd client && node build.js`), a pipe, a
-  redirect or a shell keyword, and a directory that has its own `package.json` (`node .`, where `main`
-  decides). The cost is missed roots, which stay visible in the report; L-111 lists them. A wrong root
-  is still possible if a table is wrong about a flag (one listed as taking no value that takes one).
+  (`yarn`, `pnpm --filter`, `sudo`), a `cd` anywhere before the runner, a pipe, a redirect, a shell
+  keyword, a comment, a variable or a glob, and a directory that has its own `package.json` (`node .`,
+  where `main` decides). The cost is missed roots, which stay visible in the report; L-111 lists them.
+  The known way left to root a wrong file is a table that is wrong about a flag (one listed as taking
+  no value that takes one); the last review found one, `node --env-file`, by running node.
   What moves besides the two lists: `get_dead_code_v2` counts script-run files in
   `entry_points_detected` and lists them in `_meta.package_json_entries`, so a JS repository whose only
   roots are script-run files leaves the zero-entry-point path (`diagnostics.degraded` and its

@@ -193,10 +193,15 @@ _NODE_FLAGS = frozenset({
     "--enable-source-maps", "--experimental-modules", "--experimental-json-modules",
     "--experimental-vm-modules", "--experimental-strip-types", "--experimental-specifier-resolution",
     "--harmony", "--expose-gc", "--preserve-symlinks", "--abort-on-uncaught-exception",
-    "--unhandled-rejections", "--max-old-space-size", "--stack-size", "--env-file", "--no-experimental-fetch",
+    "--max-old-space-size", "--stack-size", "--no-experimental-fetch",
 })
-_NODE_VALUE = frozenset({"-C", "--conditions", "--watch-path", "--inspect-port", "--title", "--input-type"})
+_NODE_VALUE = frozenset({
+    "-C", "--conditions", "--watch-path", "--inspect-port", "--title", "--input-type",
+    "--env-file", "--unhandled-rejections",
+})
 _NODE_PRELOAD = frozenset({"-r", "--require", "--import", "--loader", "--experimental-loader"})
+# ts-node's pretty-printing flag is deliberately absent: tests/test_tectonic_temporal_signal.py
+# reads that literal anywhere under src/ as a git format argument.
 _TS_NODE_FLAGS = frozenset({
     "--files", "-T", "--transpile-only", "--transpileOnly", "--esm", "--swc", "-H", "--compiler-host",
     "--skip-project", "--skipProject", "--skip-ignore", "--prefer-ts-exts", "--log-error",
@@ -223,7 +228,7 @@ _TS_NODE_SPEC = _spec(_TS_NODE_FLAGS, _TS_NODE_VALUE, frozenset({"-r", "--requir
 _SCRIPT_RUNNERS = {
     "node": _NODE_SPEC,
     "nodejs": _NODE_SPEC,
-    "electron": _NODE_SPEC,
+    "electron": _spec(_NODE_FLAGS, _NODE_VALUE, _NODE_PRELOAD),
     "tsx": _spec(
         _NODE_FLAGS | {"--no-cache"}, _NODE_VALUE | {"--tsconfig", "--ignore", "--include", "--exclude"},
         _NODE_PRELOAD, exec_sub=frozenset({"watch"}), suffixes=_TS,
@@ -318,13 +323,27 @@ def _resolve_script_path(
     return None
 
 
+# Characters the shell expands or that this reader would rewrite: a variable, a
+# glob, a tilde, a command substitution. A command holding one is not read.
+_EXPANSION_CHARS = frozenset("$`*?~%")
+_QUOTED = re.compile(r"\"([^\"]*)\"|'([^']*)'")
+_OPERATOR_CHARS = frozenset("();<>|&#")
+
+
 def _script_segments(command: str) -> list[list[str]]:
     """The command as simple commands joined by `&&`, `||` or `;`, or nothing.
 
-    Quoting is read before the operators. An unbalanced quote, any other
-    operator (a pipe, a redirect, `&`, parentheses) or a shell keyword returns
-    nothing: a command that cannot be read whole declares nothing.
+    A command that cannot be read whole declares nothing: an unbalanced quote;
+    any other operator (a pipe, a redirect, `&`, parentheses); a shell keyword;
+    a `#` comment; an expansion (`$VAR`, a glob, `~`); an escaped space; and a
+    quoted string that holds an operator character, because the lexer returns
+    `"&&"` and `&&` as the same token.
     """
+    if "\\ " in command or any(ch in _EXPANSION_CHARS for ch in command):
+        return []
+    for match in _QUOTED.finditer(command):
+        if any(ch in _OPERATOR_CHARS for ch in (match.group(1) or match.group(2) or "")):
+            return []
     lexer = shlex.shlex(command.replace("\\", "/"), posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     lexer.commenters = ""
@@ -336,14 +355,19 @@ def _script_segments(command: str) -> list[list[str]]:
     for token in tokens:
         if token in _SEQUENCE_OPERATORS:
             segments.append([])
-        elif token and set(token) <= set("();<>|&"):
+        elif token.startswith("#") or (token and set(token) <= set("();<>|&")):
             return []
         else:
             segments[-1].append(token)
-    segments = [s for s in segments if s]
-    if any(s[0] in _SHELL_WORDS for s in segments):
-        return []
-    return segments
+    return [s for s in segments if s]
+
+
+def _program(segment: list[str]) -> str:
+    """The word a simple command runs, past `NAME=value` assignments, by its basename."""
+    for token in segment:
+        if not _ENV_ASSIGNMENT.match(token):
+            return token.rsplit("/", 1)[-1]
+    return ""
 
 
 def _strip_prefix(tokens: list[str]) -> Optional[list[str]]:
@@ -375,9 +399,12 @@ def _script_entries(
     unknown token in front of the entry makes the invocation declare nothing.
     """
     found: set[str] = set()
-    for segment in _script_segments(command):
-        if segment[0] in _CHDIR_COMMANDS:
-            break  # everything after runs somewhere else
+    segments = _script_segments(command)
+    if any(segment[0] in _SHELL_WORDS for segment in segments):
+        return found  # shell grammar this reader does not model
+    for segment in segments:
+        if _program(segment) in _CHDIR_COMMANDS:
+            break  # everything after runs somewhere else (`FOO=1 cd sub`, `\cd sub` too)
         tokens = _strip_prefix(segment)
         if not tokens:
             continue
