@@ -10,22 +10,20 @@
   confidence 1.0, with everything only it imports reported as `all_importers_dead`. The deletion
   investigator then read a name that server imports as imported only by an unreachable file. The reader
   also existed twice, one copy in each tool with the same logic; it is one function in
-  `tools/_entry_points.py` now. For each script it takes the file a runner executes (`node`, `nodemon`,
-  `ts-node`, `tsx`, `bun`, `deno`, `babel-node` and a few more), through `npx`, `cross-env` and
-  environment assignments, plus a module named by `--require`, `--import` or `--loader`.
+  `tools/_entry_points.py` now.
   A wrong root is the worse error here, because it removes a dead file from the report with no symptom,
-  so every doubt resolves to "declares nothing": a file named to a linter or a test runner, the
-  arguments after the entry (`node build.js input.js`), a flag's value (`nodemon --watch src`), inline
-  code and checks (`node -e`, `--check`, `--test`), a subcommand that executes no file (`deno lint`,
-  `bun build x.ts`), a quoted string, and a directory that has its own `package.json` (`node .`, where
-  `main` decides). Flags are read per runner, because one spelling means different things: `--watch`
-  takes a value for nodemon and none for node, bun and deno. A changed working directory (`cd client &&
-  node build.js`, `--cwd`) declares nothing, because the argument is no longer relative to the manifest,
-  and a bare preload (`-r esm`, `--import tsx`) is a package, not a local file. The reader can still root
-  a file that is not the entry, in the shapes L-111 lists: a flag it does not know takes a value has that
-  value read as the entry when the value is an indexed file, and a bare first word is resolved as a file
-  for a runner it does not know takes that word as a subcommand (`tsx inspect main.ts` beside an
-  `inspect.js`).
+  and four review rounds each found a spelling a list of exclusions had not named. So the rule is an
+  allowlist. A script roots a file only in the form `[NAME=value] [npx | cross-env] RUNNER [flags the
+  runner's table knows] PATH`, where the runner is one of `node`, `nodemon`, `ts-node`, `ts-node-dev`,
+  `tsx`, `bun`, `deno`, `babel-node`, `electron`, `pm2-runtime`, and the path has a `/` or a `.` in it.
+  Flags are read per runner, because `--watch` takes a value for nodemon and none for node. A module
+  named by `--require`, `--import` or `--loader` is a root when it is a relative path. Everything else
+  declares nothing: a file named to a linter or a test runner, the arguments after the entry, a flag
+  the table does not know, a bare word (`deno lint`, `bun run build`, `node server`), any other wrapper
+  (`yarn`, `pnpm --filter`, `sudo`), a changed directory (`cd client && node build.js`), a pipe, a
+  redirect or a shell keyword, and a directory that has its own `package.json` (`node .`, where `main`
+  decides). The cost is missed roots, which stay visible in the report; L-111 lists them. A wrong root
+  is still possible if a table is wrong about a flag (one listed as taking no value that takes one).
   What moves besides the two lists: `get_dead_code_v2` counts script-run files in
   `entry_points_detected` and lists them in `_meta.package_json_entries`, so a JS repository whose only
   roots are script-run files leaves the zero-entry-point path (`diagnostics.degraded` and its
