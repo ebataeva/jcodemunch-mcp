@@ -216,10 +216,16 @@ _JS = ("", ".js", "/index.js")  # node tries `.js`; it never tries `.ts` or `.mj
 _TS = ("", ".ts", ".tsx", ".js", "/index.ts", "/index.js")
 
 
-def _spec(flags=_NONE, value=_NONE, preload=_NONE, exec_sub=_NONE, exec=_NONE, suffixes=_JS, prefixes=()):
+def _spec(
+    flags=_NONE, value=_NONE, preload=_NONE, exec_sub=_NONE, exec=_NONE, suffixes=_JS, prefixes=(),
+    equals=True, trailing=False,
+):
+    """One runner's grammar. ``equals``: it reads `--flag=value`. ``trailing``: it
+    keeps reading its own options after the script (nodemon does; node does not)."""
     return {
         "flags": flags, "value": value, "preload": preload,
         "exec_sub": exec_sub, "exec": exec, "suffixes": suffixes, "prefixes": tuple(prefixes),
+        "equals": equals, "trailing": trailing,
     }
 
 
@@ -230,7 +236,7 @@ _SCRIPT_RUNNERS = {
     "nodejs": _NODE_SPEC,
     "electron": _spec(_NODE_FLAGS, _NODE_VALUE, _NODE_PRELOAD),
     "tsx": _spec(
-        _NODE_FLAGS | {"--no-cache"}, _NODE_VALUE | {"--tsconfig", "--ignore", "--include", "--exclude"},
+        _NODE_FLAGS | {"--no-cache"}, _NODE_VALUE | {"--tsconfig"},
         _NODE_PRELOAD, exec_sub=frozenset({"watch"}), suffixes=_TS,
     ),
     "ts-node": _TS_NODE_SPEC,
@@ -263,6 +269,9 @@ _SCRIPT_RUNNERS = {
             "-s", "--signal", "-P", "--polling-interval",
         }),
         frozenset({"-r", "--require"}), exec=frozenset({"-x", "--exec"}),
+        # nodemon 3.1.14, run: `--ignore=x` goes to node and fails, and `server.js --cwd sub`
+        # or `server.js --exec "node other.js"` is read after the script.
+        equals=False, trailing=True,
     ),
     "babel-node": _spec(
         frozenset({"--inspect", "--inspect-brk"}),
@@ -323,18 +332,18 @@ def _resolve_script_path(
     if joined == ".":
         joined = ""
     if joined:
-        for suffix in suffixes:
-            if not suffix.startswith("/") and joined + suffix in source_files:
-                return joined + suffix
+        if "" in suffixes and joined in source_files:
+            return joined
+        # `ts-node ./server` runs `server.js` when `server.ts` is beside it, ts-node-dev
+        # runs `server.ts`, and a flag flips ts-node: two candidates declare nothing.
+        hits = [joined + s for s in suffixes if s and not s.startswith("/") and joined + s in source_files]
+        if hits:
+            return hits[0] if len(hits) == 1 else None
     if (f"{joined}/package.json" if joined else "package.json") in source_files:
         if own_main or joined != pkg_dir:
             return None
-    for suffix in suffixes:
-        if suffix.startswith("/"):
-            trial = (joined + suffix).lstrip("/")
-            if trial in source_files:
-                return trial
-    return None
+    hits = [t for t in ((joined + s).lstrip("/") for s in suffixes if s.startswith("/")) if t in source_files]
+    return hits[0] if len(hits) == 1 else None
 
 
 # ⚠⚠ The command text is an allowlist too. Six review rounds each found shell
@@ -417,7 +426,8 @@ def _script_entries(
 
     The entry is the first plain argument, when it is path-shaped and resolves
     to an indexed file. Arguments after it belong to the program (`node
-    build.js input.js`) and declare nothing. See the allowlist note above: an
+    build.js input.js`) and declare nothing; a runner that reads its own
+    options after the script (nodemon) has them read by the same rule. See the allowlist note above: an
     unknown token in front of the entry makes the invocation declare nothing.
     """
     found: set[str] = set()
@@ -443,8 +453,13 @@ def _script_entries(
         while j < len(args) and declares:
             arg = args[j]
             j += 1
+            if arg == "--" and entry_token is not None:
+                break  # the rest is the script's
             if arg.startswith("-") and arg != "-":
                 flag, eq, value = arg.partition("=")
+                if eq and not spec["equals"]:
+                    declares = False  # this runner hands `--flag=value` to node, which rejects it
+                    continue
                 takes_value = flag in spec["value"] or flag in spec["preload"] or flag in spec["exec"]
                 if takes_value:
                     if not eq:
@@ -469,6 +484,8 @@ def _script_entries(
                 elif flag not in spec["flags"] and not flag.startswith(spec["prefixes"] or ("\0",)):
                     declares = False  # an unknown flag: it may take a value, or change the directory
                 continue
+            if entry_token is not None:
+                continue  # an argument of the script, between the runner's trailing options
             if exec_sub_open:
                 exec_sub_open = False
                 if arg in spec["exec_sub"]:
@@ -477,7 +494,8 @@ def _script_entries(
                 entry_token = arg
             else:
                 declares = False  # a bare word is a subcommand or a script's name, never a path
-            break
+            if not spec["trailing"]:
+                break
         if not declares:
             continue
         if exec_command is not None:

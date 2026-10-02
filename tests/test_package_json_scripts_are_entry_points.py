@@ -74,7 +74,7 @@ def _roots(command: str, pkg_dir: str = "", files: frozenset = FILES, own_main: 
         "nodemon -e ts server.js",
         "nodemon -V server.js",
         "nodemon -w lib --verbose server.js",
-        "nodemon --ignore=legacy.js server.js",
+        "nodemon --ignore lib server.js",
         'nodemon --exec "node server.js"',
         "nodemon --watch lib -x 'node server.js'",
         "nodemon --exec babel-node server.js",
@@ -117,7 +117,6 @@ def test_the_file_a_runner_executes_is_the_only_root(command):
         ("ts-node --files -T src/server.ts", "src/server.ts"),
         ("tsx src/server.ts", "src/server.ts"),
         ("tsx watch src/server.ts", "src/server.ts"),
-        ("tsx watch --ignore extras src/server.ts", "src/server.ts"),
         ("npx tsx src/server.ts", "src/server.ts"),
         ("bun run src/server.ts", "src/server.ts"),
         ("bun src/server.ts", "src/server.ts"),
@@ -402,7 +401,7 @@ VALUE_FLAGS = {
     "node": _NODE_VALUES,
     "nodejs": _NODE_VALUES,
     "electron": _NODE_VALUES,
-    "tsx": _NODE_VALUES + ["--tsconfig", "--ignore", "--include", "--exclude"],
+    "tsx": _NODE_VALUES + ["--tsconfig"],
     "ts-node": _TS_NODE_VALUES,
     "ts-node-esm": _TS_NODE_VALUES,
     "ts-node-dev": ["-C", "--compiler", "-P", "--project", "-I", "--ignore", "-D", "--ignore-diagnostics", "-O",
@@ -648,3 +647,67 @@ def test_the_deletion_investigator_reads_the_server_as_a_live_importer(tmp_path)
     obligation = next(o for o in result["obligations"] if o["obligation"] == "export_not_imported")
     assert obligation["status"] == REFUTED, obligation
     assert "unreachable" not in json.dumps(obligation), obligation
+
+
+# -- Review round 8: each case below was run against the installed runner ------
+
+
+@pytest.mark.parametrize(
+    "command, expected",
+    [
+        # nodemon 3.1.14 reads its own options after the script
+        ("nodemon server.js --cwd lib", set()),
+        ("nodemon server.js --port 3000", set()),
+        ("nodemon server.js --watch lib", {"server.js"}),
+        ("nodemon server.js --exec babel-node", {"server.js"}),
+        ('nodemon legacy.js --exec "node server.js"', {"server.js"}),
+        ('nodemon server.js -x "node legacy.js"', {"legacy.js"}),
+        ("nodemon server.js -- --cwd lib", {"server.js"}),
+        ("nodemon server.js legacy.js", {"server.js"}),
+        ("nodemon server.js production", {"server.js"}),
+        # the `=` form is unambiguous where the runner reads it: the value is a value
+        ("node --env-file=config.js server.js", {"server.js"}),
+        ("node --env-file config.js server.js", set()),
+        # and hands `--flag=value` to node, which rejects it
+        ("nodemon --ignore=legacy.js server.js", set()),
+        ("nodemon --exec=node server.js", set()),
+        # node stops at the script: what follows is the script's
+        ("node server.js --cwd lib", {"server.js"}),
+        # tsx knows its watch filters only behind `watch`; alone they go to node and fail
+        ("tsx --ignore extras src/server.ts", set()),
+        ("tsx watch --ignore extras src/server.ts", set()),
+        ("tsx watch src/server.ts", {"src/server.ts"}),
+    ],
+)
+def test_options_after_the_script_and_the_equals_form_are_per_runner(command, expected):
+    assert _roots(command) == expected, command
+
+
+@pytest.mark.parametrize("runner", ["ts-node", "ts-node-esm", "ts-node-dev", "tsx"])
+def test_an_extensionless_path_that_names_two_files_declares_nothing(runner):
+    """ts-node and tsx run `server.js` when `server.ts` sits beside it; ts-node-dev
+    runs `server.ts`; `--prefer-ts-exts` flips ts-node. Two candidates are not decided."""
+    both = frozenset({"package.json", "server.js", "server.ts", "src/index.js", "src/index.ts"})
+    assert _roots(f"{runner} ./server", files=both) == set()
+    assert _roots(f"{runner} ./src", files=both) == set()
+    assert _roots(f"{runner} ./server.ts", files=both) == {"server.ts"}
+    one = frozenset({"package.json", "server.ts", "src/index.ts"})
+    assert _roots(f"{runner} ./server", files=one) == {"server.ts"}
+    assert _roots(f"{runner} ./src", files=one) == {"src/index.ts"}
+
+
+# Written out, and compared for equality: a loop over the source's own set cannot
+# fail when a word leaves it.
+SHELL_WORDS = [
+    "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac",
+    "{", "}", "!", "function", "builtin", "command", "eval", "source", ".", "set", "export",
+    "exit", "exec", "return", "alias", "unalias", "trap", "unset", "shift", "break", "continue",
+]
+
+
+def test_every_shell_word_in_any_segment_makes_the_command_unread():
+    assert _roots("node server.js") == {"server.js"}
+    assert set(SHELL_WORDS) == set(_entry_points._SHELL_WORDS)
+    for word in SHELL_WORDS:
+        assert _roots(f"{word} x; node server.js") == set(), word
+        assert _roots(f"node server.js && {word} x") == set(), word
