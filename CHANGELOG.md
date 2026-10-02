@@ -12,19 +12,25 @@
   also existed twice, one copy in each tool with the same logic; it is one function in
   `tools/_entry_points.py` now.
   A wrong root is the worse error here, because it removes a dead file from the report with no symptom,
-  and four review rounds each found a spelling a list of exclusions had not named. So the rule is an
+  and review rounds kept finding a spelling a list of exclusions had not named. So the rule is an
   allowlist. A script roots a file only in the form `[NAME=value] [npx | cross-env] RUNNER [flags the
-  runner's table knows] PATH`, where the runner is one of `node`, `nodemon`, `ts-node`, `ts-node-dev`,
-  `tsx`, `bun`, `deno`, `babel-node`, `electron`, `pm2-runtime`, and the path has a `/` or a `.` in it.
+  runner's table knows] PATH`, where the runner is one of `node`, `nodejs`, `nodemon`, `ts-node`,
+  `ts-node-esm`, `ts-node-dev`, `tsx`, `bun`, `deno`, `babel-node`, `electron`, `pm2-runtime`, and the
+  path has a `/` or a `.` in it. The command text is an allowlist as well: a script is read only when
+  every character is a letter, a digit, a space or one of `_ . / : = @ , + - & | ; " ' \`, and a
+  backslash only as a path separator inside a word.
   Flags are read per runner, because `--watch` takes a value for nodemon and none for node. A module
   named by `--require`, `--import` or `--loader` is a root when it is a relative path. Everything else
   declares nothing: a file named to a linter or a test runner, the arguments after the entry, a flag
   the table does not know, a bare word (`deno lint`, `bun run build`, `node server`), any other wrapper
   (`yarn`, `pnpm --filter`, `sudo`), a `cd` anywhere before the runner, a pipe, a redirect, a shell
-  keyword, a comment, a variable or a glob, and a directory that has its own `package.json` (`node .`,
+  keyword, any other character a shell interprets (`$`, `*`, `?`, `~`, `#`, `%`, a bracket, a newline)
+  anywhere in the command, and a directory that has its own `package.json` (`node .`,
   where `main` decides). The cost is missed roots, which stay visible in the report; L-111 lists them.
-  The known way left to root a wrong file is a table that is wrong about a flag (one listed as taking
-  no value that takes one); the last review found one, `node --env-file`, by running node.
+  The known ways left to root a wrong file are a table that is wrong about a flag (one listed as
+  taking no value that takes one; a review found one, `node --env-file`, by running node, and only
+  node's flags were run) and shell syntax made of allowed characters that the lexer reads differently
+  from a shell; none of the second kind is known.
   What moves besides the two lists: `get_dead_code_v2` counts script-run files in
   `entry_points_detected` and lists them in `_meta.package_json_entries`, so a JS repository whose only
   roots are script-run files leaves the zero-entry-point path (`diagnostics.degraded` and its

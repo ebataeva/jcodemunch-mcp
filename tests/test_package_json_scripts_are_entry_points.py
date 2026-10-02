@@ -436,6 +436,12 @@ def test_an_operator_inside_quotes_is_not_an_operator(quote, inside):
         "\\cd lib && node server.js",
         "\\command cd lib && node server.js",
         "\\builtin cd lib && node server.js",
+        # an escaped runner is still a runner to a shell; only the word-start rule refuses it
+        "\\node server.js",
+        "A=1 \\node server.js",
+        "npx \\nodemon server.js",
+        "true && \\node server.js",
+        "true;\\node server.js",
         "node server\\ extra.js",
         'echo "a \\" && node server.js \\" b"',
         "node server.js \\; echo x",
