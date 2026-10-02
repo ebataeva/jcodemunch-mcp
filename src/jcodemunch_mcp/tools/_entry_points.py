@@ -150,7 +150,7 @@ def entry_point_spec(index) -> EntryPointSpec:
 # ---------------------------------------------------------------------------
 #
 # One reader (LEDGER L-102). It lived twice, in `find_dead_code` and in
-# `get_dead_code_v2`, byte for byte, and neither read `scripts`: a server
+# `get_dead_code_v2`, with the same logic, and neither read `scripts`: a server
 # started by `"start": "node server.js"` has no importer by construction and
 # was published dead at confidence 1.0.
 
@@ -159,65 +159,104 @@ _JS_ENTRY_SUFFIXES = (
     "/index.js", "/index.ts", "/index.mjs", "/index.cjs",
 )
 
-# Programs that EXECUTE the file they are given. ⚠⚠ A linter, a formatter, a
-# test runner and a bundler all take file arguments too, and a file named to
-# one of those is declared nothing: adding `eslint` here turns every linted
-# file into a live root and suppresses real findings (#569's direction).
-_SCRIPT_RUNNERS = frozenset({
-    "node", "nodejs", "nodemon", "ts-node", "ts-node-dev", "ts-node-esm", "tsx",
-    "bun", "deno", "babel-node", "pm2-runtime", "electron",
+# Programs that EXECUTE the file they are given, each with ITS OWN flags. ⚠⚠ A
+# linter, a formatter, a test runner and a bundler all take file arguments too,
+# and a file named to one of those is declared nothing: adding `eslint` here
+# turns every linted file into a live root and suppresses real findings (#569's
+# direction).
+#
+# ⚠⚠ The flag tables are PER RUNNER because one spelling means different
+# things: `--watch` takes a value for nodemon and none for node, bun and deno;
+# `-e` is `--ext` for nodemon and `--eval` for node; `-r` is `--require` for
+# node and `--reload` for deno. One shared table made `node --watch server.js
+# worker.js` consume the entry and root `worker.js`.
+#   value     flags that take their value in the NEXT token
+#   preload   value flags whose value is a module loaded before the entry
+#   no_entry  with one of these, no file argument is executed
+#   exec_sub  words that come before the file and mean "execute it"
+#   exec      flags whose value is a COMMAND the runner runs (nodemon --exec)
+_NODE_VALUE = frozenset({
+    "-C", "--conditions", "--env-file", "--watch-path", "--inspect-port", "--title",
+    "--input-type", "--max-old-space-size", "--stack-size", "--diagnostic-dir",
+    "--experimental-default-type",
 })
+_NODE_PRELOAD = frozenset({"-r", "--require", "--import", "--loader", "--experimental-loader"})
+_NODE_NO_ENTRY = frozenset({
+    "-e", "--eval", "-p", "--print", "-c", "--check", "--test", "--run",
+    "-i", "--interactive", "-v", "--version", "-h", "--help",
+})
+_TS_NODE_VALUE = frozenset({
+    "-P", "--project", "-C", "--compiler", "-O", "--compiler-options", "--compilerOptions",
+    "-I", "--ignore", "--dir", "--scope-dir", "--scopeDir", "-D", "--ignore-diagnostics", "--cwd",
+})
+_TS_NODE_NO_ENTRY = frozenset({"-e", "--eval", "-p", "--print", "-i", "--interactive", "-v", "--version", "-h", "--help"})
+_HELP = frozenset({"-v", "--version", "-V", "-h", "--help"})
+_NONE: frozenset = frozenset()
+
+
+def _spec(value=_NONE, preload=_NONE, no_entry=_HELP, exec_sub=_NONE, exec=_NONE, subcommands=False, script_names=False):
+    return {
+        "value": value, "preload": preload, "no_entry": no_entry, "exec_sub": exec_sub,
+        "exec": exec, "subcommands": subcommands, "script_names": script_names,
+    }
+
+
+_NODE_SPEC = _spec(_NODE_VALUE, _NODE_PRELOAD, _NODE_NO_ENTRY, exec_sub=frozenset({"inspect"}))
+_TS_NODE_SPEC = _spec(_TS_NODE_VALUE, frozenset({"-r", "--require"}), _TS_NODE_NO_ENTRY)
+_SCRIPT_RUNNERS = {
+    "node": _NODE_SPEC,
+    "nodejs": _NODE_SPEC,
+    "electron": _NODE_SPEC,
+    "tsx": _spec(
+        _NODE_VALUE | {"--tsconfig", "--ignore", "--include", "--exclude"},
+        _NODE_PRELOAD, _NODE_NO_ENTRY, exec_sub=frozenset({"watch"}),
+    ),
+    "ts-node": _TS_NODE_SPEC,
+    "ts-node-esm": _TS_NODE_SPEC,
+    "ts-node-dev": _spec(
+        _TS_NODE_VALUE | {"--watch", "--ignore-watch", "--debounce", "--interval"},
+        frozenset({"-r", "--require"}), _TS_NODE_NO_ENTRY,
+    ),
+    "nodemon": _spec(
+        frozenset({"-w", "--watch", "-e", "--ext", "-i", "--ignore", "--config", "-d", "--delay", "-s", "--signal", "--cwd"}),
+        frozenset({"-r", "--require"}), exec=frozenset({"-x", "--exec"}),
+    ),
+    "babel-node": _spec(
+        frozenset({"--presets", "--plugins", "--extensions", "-x", "--config-file", "--ignore", "--only", "--env-name", "--root-mode"}),
+        frozenset({"-r", "--require"}), frozenset({"-e", "--eval", "-p", "--print"}) | _HELP,
+    ),
+    "bun": _spec(
+        frozenset({"-c", "--config", "--cwd", "--env-file", "-d", "--define", "-l", "--loader", "--tsconfig-override", "--port", "--conditions"}),
+        frozenset({"-r", "--preload", "--require", "--import"}),
+        frozenset({"-e", "--eval", "-p", "--print", "--revision"}) | _HELP,
+        exec_sub=frozenset({"run"}), subcommands=True, script_names=True,
+    ),
+    "deno": _spec(
+        frozenset({"-c", "--config", "--import-map", "--lock", "--cert", "--location", "--seed", "--v8-flags", "-L", "--log-level"}),
+        exec_sub=frozenset({"run"}), subcommands=True,
+    ),
+    "pm2-runtime": _spec(exec_sub=frozenset({"start"})),
+}
 # Tokens that stand in front of the program without being it.
 _SCRIPT_WRAPPERS = frozenset({
     "npx", "pnpx", "bunx", "cross-env", "cross-env-shell", "env", "dotenv",
     "yarn", "pnpm", "exec", "dlx", "--",
 })
-# Flags whose VALUE is a module the runner loads before the entry file.
-_PRELOAD_FLAGS = frozenset({"-r", "--require", "--import", "--loader", "--experimental-loader", "--preload"})
-# Flags that take a value in the NEXT token. ⚠⚠ The value is not the entry:
-# `nodemon --watch src server.js` runs `server.js`, and reading `src` as the
-# entry rooted `src/index.ts`. A flag missing from this set has its value read
-# as the entry, which roots a file only if that value resolves to one; add the
-# flag here when that is seen.
-_VALUE_FLAGS = frozenset({
-    # node
-    "-C", "--conditions", "--env-file", "--watch-path", "--inspect-port", "--title",
-    "--input-type", "--max-old-space-size", "--stack-size", "--diagnostic-dir",
-    # nodemon, ts-node-dev
-    "-w", "--watch", "-e", "--ext", "-i", "--ignore", "--config", "-d", "--delay",
-    "-s", "--signal", "--cwd", "--ignore-watch", "--debounce", "--interval",
-    # ts-node, tsx
-    "-P", "--project", "--compiler", "-O", "--compiler-options", "-I", "--dir",
-    "--scope-dir", "--tsconfig", "--exclude", "--include",
-    # deno, bun
-    "-c", "--import-map", "--lock", "--cert", "--location", "--seed", "--v8-flags",
-    "-d", "--define", "-l", "--tsconfig-override", "--port", "--env",
-})
-# With one of these the runner executes no file argument: inline code, a syntax
-# check, the test runner, or (`nodemon --exec`) another command entirely.
-_NO_ENTRY_FLAGS = frozenset({"--eval", "--print", "-p", "--check", "--test", "-x", "--exec", "--version", "--help", "-h", "-v"})
-# node reads -e as --eval and -c as --check; nodemon and deno read them as value flags.
-_NODE_FAMILY = frozenset({"node", "nodejs", "ts-node", "ts-node-esm", "babel-node", "tsx"})
-_NODE_NO_ENTRY_FLAGS = frozenset({"-e", "-c"})
-# Words that come before the file and mean "execute it".
-_EXEC_SUBCOMMANDS = {"bun": frozenset({"run"}), "deno": frozenset({"run"}), "tsx": frozenset({"watch"})}
-# Runners that take a subcommand: any OTHER bare word in that position is a
-# subcommand that executes no file argument (`deno lint`, `bun build x.ts`,
-# `bun test`). Only a path-shaped first argument is an entry there.
-_SUBCOMMAND_RUNNERS = frozenset({"bun", "deno"})
-# `bun run build` runs the SCRIPT named build before any file of that name.
-_SCRIPT_NAME_RUNNERS = frozenset({"bun"})
+_RUNNABLE_SUFFIXES = (".js", ".ts", ".mjs", ".cjs", ".mts", ".cts", ".jsx", ".tsx")
 _ENV_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 _OPERATORS = frozenset({"&&", "||", ";", "|", "&", "|&", ";;"})
 
 
-def _resolve_script_path(pkg_dir: str, token: str, source_files: frozenset) -> Optional[str]:
+def _resolve_script_path(
+    pkg_dir: str, token: str, source_files: frozenset, own_main: bool = True
+) -> Optional[str]:
     """The indexed file a script argument names, relative to its package, or None.
 
     A directory argument (`node src`, `node .`) loads that directory's
     `package.json` `main` when it has one, which the field reader already
-    handles, so a directory holding a `package.json` resolves to nothing here.
-    Otherwise it loads `index.*`.
+    handles. So a directory holding a `package.json` resolves to nothing here,
+    except the script's own package when its manifest names no `main`
+    (``own_main`` False): node loads `index.*` there.
     """
     token = token.replace("\\", "/")
     joined = posixpath.normpath(posixpath.join(pkg_dir, token)) if pkg_dir else posixpath.normpath(token)
@@ -230,7 +269,8 @@ def _resolve_script_path(pkg_dir: str, token: str, source_files: frozenset) -> O
             if not suffix.startswith("/") and joined + suffix in source_files:
                 return joined + suffix
     if (f"{joined}/package.json" if joined else "package.json") in source_files:
-        return None
+        if own_main or joined != pkg_dir:
+            return None
     for suffix in _JS_ENTRY_SUFFIXES:
         if suffix.startswith("/"):
             trial = (joined + suffix).lstrip("/")
@@ -261,18 +301,26 @@ def _script_segments(command: str) -> list[list[str]]:
 
 
 def _script_entries(
-    command: str, script_names: frozenset, pkg_dir: str, source_files: frozenset, _depth: int = 0
+    command: str,
+    script_names: frozenset,
+    pkg_dir: str,
+    source_files: frozenset,
+    own_main: bool = True,
+    _depth: int = 0,
 ) -> set[str]:
     """Files one `scripts` command runs: per runner invocation, its preloads and its entry file.
 
     The entry is the first plain argument, when it resolves to an indexed
     file. If it does not resolve (`node dist/build.js input.js`, with `dist/`
     not indexed) the command declares nothing: the arguments after the entry
-    belong to the program. A flag in `_VALUE_FLAGS` consumes the next token.
+    belong to the program.
 
     ⚠⚠ Every doubt resolves to "declares nothing". A missed root leaves a live
     file reported, which the reader can see; a wrong root removes a dead file
-    from the report, which nobody can (#569).
+    from the report, which nobody can (#569). Two rules exist only for that:
+    a value flag never consumes another flag, and a value flag whose value is
+    itself a runnable indexed file makes the segment undecidable (the table may
+    be wrong about that flag, and then the "value" was the entry).
     """
     found: set[str] = set()
     for tokens in _script_segments(command):
@@ -284,59 +332,67 @@ def _script_entries(
         if i >= len(tokens):
             continue
         runner = tokens[i].rsplit("/", 1)[-1]
-        if runner not in _SCRIPT_RUNNERS:
+        spec = _SCRIPT_RUNNERS.get(runner)
+        if spec is None:
             continue
         args = tokens[i + 1:]
-        no_entry = _NO_ENTRY_FLAGS | (_NODE_NO_ENTRY_FLAGS if runner in _NODE_FAMILY else frozenset())
-        value_flags = _VALUE_FLAGS - no_entry
         preloads: set[str] = set()
-        entry: Optional[str] = None
+        entry_token: Optional[str] = None
+        exec_command: Optional[str] = None
         declares = True
-        subcommand_open = runner in _SUBCOMMAND_RUNNERS or runner in _EXEC_SUBCOMMANDS
+        subcommand_open = bool(spec["subcommands"] or spec["exec_sub"])
         j = 0
-        while j < len(args):
+        while j < len(args) and declares:
             arg = args[j]
             j += 1
             if arg.startswith("-") and arg != "-":
                 flag, eq, value = arg.partition("=")
-                if flag in ("-x", "--exec") and runner in ("nodemon", "ts-node-dev"):
-                    # The command nodemon runs instead of a file argument.
-                    if not eq and j < len(args):
-                        value = args[j]
-                    if value and _depth < 2:
-                        found |= _script_entries(value, script_names, pkg_dir, source_files, _depth + 1)
+                takes_value = flag in spec["value"] or flag in spec["preload"] or flag in spec["exec"]
+                if flag in spec["no_entry"]:
                     declares = False
-                    break
-                if flag in no_entry:
-                    declares = False
-                    break
-                if flag in _PRELOAD_FLAGS:
-                    if not eq and j < len(args):
+                elif takes_value:
+                    if not eq:
+                        if j >= len(args) or args[j].startswith("-"):
+                            continue  # no value to read; never consume another flag
                         value = args[j]
                         j += 1
-                    hit = _resolve_script_path(pkg_dir, value, source_files) if value else None
-                    if hit:
-                        preloads.add(hit)
-                elif flag in value_flags and not eq:
-                    j += 1
+                    if flag in spec["exec"]:
+                        exec_command = value
+                    elif flag in spec["preload"]:
+                        hit = _resolve_script_path(pkg_dir, value, source_files, own_main)
+                        if hit:
+                            preloads.add(hit)
+                    elif not eq and value.endswith(_RUNNABLE_SUFFIXES) and _resolve_script_path(
+                        pkg_dir, value, source_files, own_main
+                    ):
+                        declares = False  # is that a value, or the entry behind a flag we misread?
                 continue
             bare = "/" not in arg and "." not in arg
             if subcommand_open:
                 subcommand_open = False
-                if arg in _EXEC_SUBCOMMANDS.get(runner, ()):
+                if arg in spec["exec_sub"]:
                     continue
-                if bare and runner in _SUBCOMMAND_RUNNERS:
+                if bare and spec["subcommands"]:
                     declares = False  # `deno lint`, `bun build x.ts`, `bun test`
-                    break
-            if bare and runner in _SCRIPT_NAME_RUNNERS and arg in script_names:
+                    continue
+            if bare and spec["script_names"] and arg in script_names:
                 declares = False  # `bun run build`: the script, not a file
-                break
-            entry = _resolve_script_path(pkg_dir, arg, source_files)
+                continue
+            entry_token = arg
             break
-        if declares:
-            found |= preloads
-            if entry:
-                found.add(entry)
+        if not declares:
+            continue
+        if exec_command is not None:
+            # nodemon appends its script argument to the command it was told to run.
+            if _depth < 2:
+                run = exec_command if entry_token is None else f"{exec_command} {shlex.quote(entry_token)}"
+                found |= _script_entries(run, script_names, pkg_dir, source_files, own_main, _depth + 1)
+            continue
+        found |= preloads
+        if entry_token is not None:
+            hit = _resolve_script_path(pkg_dir, entry_token, source_files, own_main)
+            if hit:
+                found.add(hit)
     return found
 
 
@@ -404,7 +460,8 @@ def package_json_entries(index, store, owner: str, repo_name: str) -> set[str]:
         scripts = pkg.get("scripts")
         if isinstance(scripts, dict):
             names = frozenset(k for k in scripts if isinstance(k, str))
+            own_main = any(isinstance(pkg.get(k), str) for k in ("main", "module"))
             for command in scripts.values():
                 if isinstance(command, str):
-                    entries |= _script_entries(command, names, pkg_dir, source_files)
+                    entries |= _script_entries(command, names, pkg_dir, source_files, own_main)
     return entries

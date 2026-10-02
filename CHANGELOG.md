@@ -18,8 +18,11 @@
   arguments after the entry (`node build.js input.js`), a flag's value (`nodemon --watch src`), inline
   code and checks (`node -e`, `--check`, `--test`), a subcommand that executes no file (`deno lint`,
   `bun build x.ts`), a quoted string, and a directory that has its own `package.json` (`node .`, where
-  `main` decides). One case can still root a file that is not the entry: a value-taking flag this
-  reader does not know has its value read as the entry, when that value is an indexed file (L-111).
+  `main` decides). Flags are read per runner, because one spelling means different things: `--watch`
+  takes a value for nodemon and none for node, bun and deno. The reader can still root a file that is
+  not the entry, in the shapes L-111 lists: a flag it does not know takes a value has that value read
+  as the entry when the value is an indexed file, and a bare first word is resolved as a file for a
+  runner it does not know takes subcommands.
   What moves besides the two lists: `get_dead_code_v2` counts script-run files in
   `entry_points_detected` and lists them in `_meta.package_json_entries`, so a JS repository whose only
   roots are script-run files leaves the zero-entry-point path (`diagnostics.degraded` and its

@@ -200,6 +200,105 @@ def test_a_directory_argument_defers_to_that_directorys_manifest():
     assert _roots("node tools", files=files) == set()
     assert _roots("node plain", files=files) == {"plain/index.js"}  # no manifest: node loads index.js
 
+# ── Review round 2: one spelling, different runners ──────────────────────────
+
+
+@pytest.mark.parametrize(
+    "command,roots",
+    [
+        # `--watch` takes a value for nodemon and none for node, bun and deno
+        ("node --watch server.js", {"server.js"}),
+        ("node --watch server.js legacy.js", {"server.js"}),
+        ("node --watch -r ./preload.js server.js", {"preload.js", "server.js"}),
+        ("bun --watch ./server.js", {"server.js"}),
+        ("bun run --watch src/server.ts", {"src/server.ts"}),
+        ("deno run --watch src/server.ts", {"src/server.ts"}),
+        # `-r` is --reload for deno, `-e` is --ext for nodemon and --eval for node
+        ("deno run -r src/server.ts src/app.ts", {"src/server.ts"}),
+        ("nodemon -e ts server.js", {"server.js"}),
+        ("node -e server.js legacy.js", set()),
+        ("node -c server.js legacy.js", set()),
+        # a value flag never consumes another flag
+        ("nodemon -w --verbose server.js", {"server.js"}),
+        ('nodemon -w --exec "node server.js"', {"server.js"}),
+        # nodemon appends its script to the command --exec names
+        ("nodemon --exec babel-node server.js", {"server.js"}),
+        ('nodemon -x "ts-node" src/server.ts', {"src/server.ts"}),
+        ("nodemon --exec node server.js", {"server.js"}),
+        ("nodemon --watch lib --exec node server.js", {"server.js"}),
+        ("nodemon --exec eslint server.js", set()),
+        # words before the file
+        ("pm2-runtime start server.js", {"server.js"}),
+        ("pm2-runtime start ecosystem.config.js", set()),  # not indexed; `start.js` is not the entry
+        ("node inspect server.js", {"server.js"}),
+        ("node inspect", set()),
+        ("bun --watch build ./src/app.ts", set()),
+        # node 22 runs the SCRIPT named by --run
+        ("node --run build", set()),
+        # a value that is itself a runnable indexed file: the table may be wrong, so nothing
+        ("node --watch-path server.js legacy.js", set()),
+        ("nodemon --ignore legacy.js server.js", set()),
+        # unreadable, or outside the package
+        ("node server.js 'x", set()),
+        ("node /src", set()),
+    ],
+)
+def test_flags_mean_what_their_own_runner_says(command, roots):
+    files = FILES | {"start.js", "inspect.js"}
+    assert _roots(command, scripts=("build",), files=files) == roots, command
+
+
+def test_backslashes_in_a_script_path_are_read_as_separators():
+    assert _roots("node .\\server.js") == {"server.js"}
+    assert _roots("node src\\server.ts") == {"src/server.ts"}
+
+
+def test_node_dot_loads_index_only_when_the_manifest_names_no_main():
+    files = frozenset({"package.json", "index.js"})
+    assert _entry_points._script_entries("node .", frozenset(), "", files, True) == set()
+    assert _entry_points._script_entries("node .", frozenset(), "", files, False) == {"index.js"}
+    nested = frozenset({"package.json", "tools/package.json", "tools/index.js"})
+    assert _entry_points._script_entries("node tools", frozenset(), "", nested, False) == set()  # tools' own manifest decides
+
+
+# ── The reader, from manifest text (no index build) ──────────────────────────
+
+
+class _Index:
+    def __init__(self, files):
+        self.source_files = list(files)
+
+
+class _Store:
+    def __init__(self, files):
+        self._files = files
+
+    def get_file_content(self, _owner, _name, path):
+        return self._files.get(path)
+
+
+def _entries(files: dict[str, str]) -> set[str]:
+    return _entry_points.package_json_entries(_Index(files), _Store(files), "o", "r")
+
+
+@pytest.mark.parametrize(
+    "manifest,roots",
+    [
+        ({"scripts": {"all": "bun run build"}}, {"build.js"}),  # no script of that name: bun runs the file
+        ({"scripts": {"build": "tsc", "all": "bun run build"}}, set()),  # the script's name reaches the rule
+        ({"scripts": {"start": "node .\\\\server.js"}}, {"server.js"}),
+        ({"scripts": "node server.js"}, set()),
+        ({"scripts": ["node server.js"]}, set()),
+        ({"scripts": {"start": {"cmd": "node server.js"}}}, set()),
+        ({"scripts": {"start": "node ."}}, {"index.js"}),
+        ({"scripts": {"start": "node ."}, "main": "dist/server.js"}, set()),
+        ({"scripts": {"start": "node ."}, "main": "server.js"}, {"server.js"}),
+    ],
+)
+def test_the_reader_passes_the_manifest_to_the_rule(manifest, roots):
+    files = {"package.json": json.dumps(manifest), "server.js": "", "build.js": "", "index.js": ""}
+    assert _entries(files) == roots, manifest
+
 
 # ── The tools, end to end ────────────────────────────────────────────────────
 
