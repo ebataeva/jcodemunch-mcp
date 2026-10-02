@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A file a `package.json` script runs is an entry point.** `find_dead_code` and `get_dead_code_v2`
+  read `main`, `module`, `browser`, `exports` and `bin` from the manifest and not `scripts`, so a server
+  started by `"start": "node server.js"` has no importer by construction and was reported dead at
+  confidence 1.0, with everything only it imports reported as `all_importers_dead`. The deletion
+  investigator then read a name that server imports as imported only by an unreachable file. The reader
+  also existed twice, one copy in each tool, byte for byte; it is one function in `tools/_entry_points.py`
+  now. For each script it takes the file a runner executes (`node`, `nodemon`, `ts-node`, `tsx`, `bun`,
+  `deno`, `babel-node` and a few more), through `npx`, `cross-env` and environment assignments, plus a
+  module named by `--require`, `--import` or `--loader`. A file that is only NAMED in a script declares
+  nothing: `eslint legacy.js` and the second argument of `node build.js input.js` stay reported, and a
+  test asserts that as firmly as the fix. Measured on the 11 repositories indexed on this machine that
+  hold a `package.json`: 40 files become roots, each one the argument of a runner
+  (`evidence/l102_measure.txt`). Still reported dead, and still wrong: `index.js` in a tree with no
+  `package.json`, and a Python script with no main guard (LEDGER L-102, L-111).
+
 ## [1.108.327] - 2026-10-02 - a local model path is refused when the installed sentence-transformers would run its code
 
 ### Security

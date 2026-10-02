@@ -13,7 +13,6 @@ constants are excluded to reduce noise).
 
 from __future__ import annotations
 
-import json
 import re
 import time
 from collections import deque
@@ -25,7 +24,7 @@ from ._utils import resolve_repo as _resolve_repo
 from ._call_graph import _word_match, build_symbols_by_file
 # One matcher, not two: entry_point_patterns must mean the same thing in
 # both dead-code tools or #436 gets replaced by a subtler version of itself.
-from ._entry_points import entry_point_spec
+from ._entry_points import entry_point_spec, package_json_entries as _package_json_entries
 from .find_dead_code import _matches_any_pattern, unmatched_patterns
 from ._runtime_discovery import discover_dynamic_packages
 from ._dynamic_boundary import FILES_CAP, DynamicBoundary
@@ -204,75 +203,6 @@ def _barrel_exports(
         if _is_barrel(f):
             _collect(f, 0)
     return exported
-
-
-def _package_json_entries(index, store, owner, repo_name) -> set[str]:
-    """Return source files referenced by any ``package.json``'s ``main`` /
-    ``module`` / ``exports`` / ``bin`` field.
-
-    For JavaScript/TypeScript libraries there is no ``app.py``-equivalent
-    filename heuristic that identifies the consumer-facing entry point;
-    the canonical answer is whatever the package manifest declares as
-    ``main``. Without this, every library file looks unreachable and
-    Signal 1 fires for every symbol. (Issue: sverklo bench v1.)
-    """
-    entries: set[str] = set()
-    source_files = frozenset(index.source_files)
-    for f in index.source_files:
-        if _filename(f) != "package.json":
-            continue
-        content = store.get_file_content(owner, repo_name, f)
-        if not content:
-            continue
-        try:
-            pkg = json.loads(content)
-        except (ValueError, TypeError):
-            continue
-        if not isinstance(pkg, dict):
-            continue
-        candidates: list[str] = []
-        for key in ("main", "module", "browser"):
-            v = pkg.get(key)
-            if isinstance(v, str):
-                candidates.append(v)
-        # `exports` can be a string, a dict of subpaths, or a conditional dict.
-        exports = pkg.get("exports")
-        if isinstance(exports, str):
-            candidates.append(exports)
-        elif isinstance(exports, dict):
-            def _walk_exports(node):
-                if isinstance(node, str):
-                    candidates.append(node)
-                elif isinstance(node, dict):
-                    for v in node.values():
-                        _walk_exports(v)
-            _walk_exports(exports)
-        # `bin` can be a string or a {name: path} dict.
-        bins = pkg.get("bin")
-        if isinstance(bins, str):
-            candidates.append(bins)
-        elif isinstance(bins, dict):
-            candidates.extend(v for v in bins.values() if isinstance(v, str))
-
-        pkg_dir = f.replace("\\", "/").rsplit("/", 1)[0] if "/" in f else ""
-        for cand in candidates:
-            cand = cand.lstrip("./").replace("\\", "/")
-            joined = f"{pkg_dir}/{cand}" if pkg_dir else cand
-            joined = joined.lstrip("/")
-            # Try the literal path; then try resolve_specifier semantics
-            # (handles bare specifiers and extension-less imports).
-            if joined in source_files:
-                entries.add(joined)
-                continue
-            # Try common JS/TS extensions if missing.
-            for ext in ("", ".js", ".ts", ".mjs", ".cjs", ".mts", ".cts",
-                        ".jsx", ".tsx",
-                        "/index.js", "/index.ts", "/index.mjs", "/index.cjs"):
-                trial = joined + ext
-                if trial in source_files:
-                    entries.add(trial)
-                    break
-    return entries
 
 
 # ---------------------------------------------------------------------------
