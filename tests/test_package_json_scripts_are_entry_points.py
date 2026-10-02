@@ -299,6 +299,58 @@ def test_the_reader_passes_the_manifest_to_the_rule(manifest, roots):
     files = {"package.json": json.dumps(manifest), "server.js": "", "build.js": "", "index.js": ""}
     assert _entries(files) == roots, manifest
 
+# ── Review round 3: where the command runs, and what a preload names ─────────
+
+
+@pytest.mark.parametrize(
+    "command,roots",
+    [
+        # a changed working directory: the argument is not relative to the manifest any more
+        ("cd lib && node server.js", set()),
+        ("(cd lib && node server.js)", set()),
+        ("pushd lib; node server.js", set()),
+        ("node server.js && cd lib && node legacy.js", {"server.js"}),
+        ("nodemon --cwd lib server.js", set()),
+        ("ts-node --cwd src server.ts", set()),
+        ("ts-node --dir src server.ts", set()),
+        ("bun --cwd lib run server.js", set()),
+        ("yarn --cwd lib node server.js", set()),
+        ("yarn --cwd=lib node server.js", set()),
+        ("node -C development server.js", {"server.js"}),  # node's -C is --conditions
+        # a bare preload is a package in node_modules, never `./esm`
+        ("node -r esm server.js", {"server.js"}),
+        ("node --import tsx server.js", {"server.js"}),
+        ("node --require register server.js", {"server.js"}),
+        ("node -r dotenv/config server.js", {"server.js"}),
+        ("bun --preload esm server.js", {"server.js"}),
+        ("node -r ./esm server.js", {"esm.js", "server.js"}),
+        ("node --import=./register.js server.js", {"register.js", "server.js"}),
+        # -V is --verbose for nodemon and --version for deno
+        ("nodemon -V server.js", {"server.js"}),
+        ("deno -V server.js", set()),
+        # V8 options and the `=` form: the value is inside the token
+        ("node --stack-size=2000 server.js", {"server.js"}),
+        ("nodemon --ignore=legacy.js server.js", {"server.js"}),
+    ],
+)
+def test_a_changed_directory_and_a_bare_preload_root_nothing_of_ours(command, roots):
+    files = FILES | {"lib/server.js", "src/server.ts", "esm.js", "tsx.ts", "register.js", "dotenv/config.js"}
+    assert _roots(command, files=files) == roots, command
+
+
+@pytest.mark.parametrize(
+    "manifest,roots",
+    [
+        ({"scripts": {"start": "node ."}, "module": "dist/x.mjs"}, {"index.js"}),  # node reads `main` only
+        ({"scripts": {"start": "node ."}, "main": ""}, {"index.js"}),
+        ({"scripts": {"start": "node ."}, "main": 5}, {"index.js"}),
+        ({"scripts": {"start": "cd lib && node server.js"}}, set()),
+    ],
+)
+def test_the_reader_reads_main_as_node_does(manifest, roots):
+    files = {"package.json": json.dumps(manifest), "server.js": "", "index.js": "", "lib/server.js": ""}
+    assert _entries(files) == roots, manifest
+
 
 # ── The tools, end to end ────────────────────────────────────────────────────
 

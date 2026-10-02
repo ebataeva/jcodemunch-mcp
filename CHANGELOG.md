@@ -19,10 +19,13 @@
   code and checks (`node -e`, `--check`, `--test`), a subcommand that executes no file (`deno lint`,
   `bun build x.ts`), a quoted string, and a directory that has its own `package.json` (`node .`, where
   `main` decides). Flags are read per runner, because one spelling means different things: `--watch`
-  takes a value for nodemon and none for node, bun and deno. The reader can still root a file that is
-  not the entry, in the shapes L-111 lists: a flag it does not know takes a value has that value read
-  as the entry when the value is an indexed file, and a bare first word is resolved as a file for a
-  runner it does not know takes subcommands.
+  takes a value for nodemon and none for node, bun and deno. A changed working directory (`cd client &&
+  node build.js`, `--cwd`) declares nothing, because the argument is no longer relative to the manifest,
+  and a bare preload (`-r esm`, `--import tsx`) is a package, not a local file. The reader can still root
+  a file that is not the entry, in the shapes L-111 lists: a flag it does not know takes a value has that
+  value read as the entry when the value is an indexed file, and a bare first word is resolved as a file
+  for a runner it does not know takes that word as a subcommand (`tsx inspect main.ts` beside an
+  `inspect.js`).
   What moves besides the two lists: `get_dead_code_v2` counts script-run files in
   `entry_points_detected` and lists them in `_meta.package_json_entries`, so a JS repository whose only
   roots are script-run files leaves the zero-entry-point path (`diagnostics.degraded` and its

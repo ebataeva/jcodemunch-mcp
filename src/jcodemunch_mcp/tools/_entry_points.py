@@ -177,7 +177,7 @@ _JS_ENTRY_SUFFIXES = (
 #   exec      flags whose value is a COMMAND the runner runs (nodemon --exec)
 _NODE_VALUE = frozenset({
     "-C", "--conditions", "--env-file", "--watch-path", "--inspect-port", "--title",
-    "--input-type", "--max-old-space-size", "--stack-size", "--diagnostic-dir",
+    "--input-type", "--diagnostic-dir",
     "--experimental-default-type",
 })
 _NODE_PRELOAD = frozenset({"-r", "--require", "--import", "--loader", "--experimental-loader"})
@@ -188,9 +188,10 @@ _NODE_NO_ENTRY = frozenset({
 _TS_NODE_VALUE = frozenset({
     "-P", "--project", "-C", "--compiler", "-O", "--compiler-options", "--compilerOptions",
     "-I", "--ignore", "--dir", "--scope-dir", "--scopeDir", "-D", "--ignore-diagnostics", "--cwd",
+    "--transpiler",
 })
 _TS_NODE_NO_ENTRY = frozenset({"-e", "--eval", "-p", "--print", "-i", "--interactive", "-v", "--version", "-h", "--help"})
-_HELP = frozenset({"-v", "--version", "-V", "-h", "--help"})
+_HELP = frozenset({"-v", "--version", "-h", "--help"})
 _NONE: frozenset = frozenset()
 
 
@@ -233,7 +234,7 @@ _SCRIPT_RUNNERS = {
     ),
     "deno": _spec(
         frozenset({"-c", "--config", "--import-map", "--lock", "--cert", "--location", "--seed", "--v8-flags", "-L", "--log-level"}),
-        exec_sub=frozenset({"run"}), subcommands=True,
+        no_entry=_HELP | {"-V"}, exec_sub=frozenset({"run"}), subcommands=True,
     ),
     "pm2-runtime": _spec(exec_sub=frozenset({"start"})),
 }
@@ -242,6 +243,12 @@ _SCRIPT_WRAPPERS = frozenset({
     "npx", "pnpx", "bunx", "cross-env", "cross-env-shell", "env", "dotenv",
     "yarn", "pnpm", "exec", "dlx", "--",
 })
+# A changed working directory: the file argument is no longer relative to the
+# manifest. `cd client && node build.js` rooted the ROOT `build.js` and left the
+# real entry reported. After one of these, the rest of the command declares
+# nothing; a runner carrying one of the flags declares nothing.
+_CHDIR_COMMANDS = frozenset({"cd", "pushd", "chdir"})
+_CWD_FLAGS = frozenset({"--cwd", "--dir", "--prefix", "-C"})
 _RUNNABLE_SUFFIXES = (".js", ".ts", ".mjs", ".cjs", ".mts", ".cts", ".jsx", ".tsx")
 _ENV_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 _OPERATORS = frozenset({"&&", "||", ";", "|", "&", "|&", ";;"})
@@ -331,6 +338,10 @@ def _script_entries(
             i += 1
         if i >= len(tokens):
             continue
+        if tokens[i] in _CHDIR_COMMANDS:
+            break  # everything after runs somewhere else
+        if any(t.partition("=")[0] in _CWD_FLAGS for t in tokens[:i]):
+            continue  # `yarn --cwd sub node x.js`
         runner = tokens[i].rsplit("/", 1)[-1]
         spec = _SCRIPT_RUNNERS.get(runner)
         if spec is None:
@@ -348,7 +359,7 @@ def _script_entries(
             if arg.startswith("-") and arg != "-":
                 flag, eq, value = arg.partition("=")
                 takes_value = flag in spec["value"] or flag in spec["preload"] or flag in spec["exec"]
-                if flag in spec["no_entry"]:
+                if flag in spec["no_entry"] or (flag in _CWD_FLAGS and flag not in spec["value"] - {"--cwd", "--dir"}):
                     declares = False
                 elif takes_value:
                     if not eq:
@@ -359,9 +370,12 @@ def _script_entries(
                     if flag in spec["exec"]:
                         exec_command = value
                     elif flag in spec["preload"]:
-                        hit = _resolve_script_path(pkg_dir, value, source_files, own_main)
-                        if hit:
-                            preloads.add(hit)
+                        # `-r esm`, `--import tsx`: node resolves a bare name from
+                        # node_modules, never `./esm`. Only a relative path is ours.
+                        if value.startswith(("./", "../")):
+                            hit = _resolve_script_path(pkg_dir, value, source_files, own_main)
+                            if hit:
+                                preloads.add(hit)
                     elif not eq and value.endswith(_RUNNABLE_SUFFIXES) and _resolve_script_path(
                         pkg_dir, value, source_files, own_main
                     ):
@@ -460,7 +474,7 @@ def package_json_entries(index, store, owner: str, repo_name: str) -> set[str]:
         scripts = pkg.get("scripts")
         if isinstance(scripts, dict):
             names = frozenset(k for k in scripts if isinstance(k, str))
-            own_main = any(isinstance(pkg.get(k), str) for k in ("main", "module"))
+            own_main = isinstance(pkg.get("main"), str) and bool(pkg.get("main"))  # node reads `main` only
             for command in scripts.values():
                 if isinstance(command, str):
                     entries |= _script_entries(command, names, pkg_dir, source_files, own_main)
