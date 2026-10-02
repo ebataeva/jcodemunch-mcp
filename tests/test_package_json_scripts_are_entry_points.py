@@ -335,7 +335,7 @@ def test_more_forms_that_run_the_server(command):
         'echo "&&" node server.js',
         'echo ";" node server.js',
         "echo '|' node server.js",
-        # shell words anywhere in the command, behind an assignment too
+        # shell words anywhere in the command
         "eval node server.js",
         "source env.sh; node server.js",
         "export A=1; node server.js",
@@ -376,14 +376,19 @@ def test_each_runner_appends_only_its_own_extensions():
 # The flags that take their value in the NEXT token, written out here and not
 # read from the table: moving one into a runner's `flags` set makes the value
 # (a bare word below) end the command, and this fails. This is the table error
-# that can root a wrong file, so every entry is pinned.
+# that can root a wrong file, so every entry is pinned. `test_every_value_flag_is_written_out_for_every_runner`
+# holds this list equal to the table.
+_NODE_VALUES = ["-C", "--conditions", "--watch-path", "--inspect-port", "--title", "--input-type", "--env-file", "--unhandled-rejections"]
+_TS_NODE_VALUES = ["-P", "--project", "-C", "--compiler", "-O", "--compiler-options", "--compilerOptions", "-I", "--ignore",
+                   "--scope-dir", "--scopeDir", "-D", "--ignore-diagnostics", "--transpiler"]
 VALUE_FLAGS = {
-    "node": ["-C", "--conditions", "--watch-path", "--inspect-port", "--title", "--input-type", "--env-file", "--unhandled-rejections"],
-    "electron": ["--conditions", "--env-file"],
-    "tsx": ["--tsconfig", "--ignore", "--include", "--exclude", "--env-file", "--conditions"],
-    "ts-node": ["-P", "--project", "-C", "--compiler", "-O", "--compiler-options", "--compilerOptions", "-I", "--ignore",
-                "--scope-dir", "--scopeDir", "-D", "--ignore-diagnostics", "--transpiler"],
-    "ts-node-dev": ["--watch", "--ignore-watch", "--debounce", "--interval", "-P", "--project"],
+    "node": _NODE_VALUES,
+    "nodejs": _NODE_VALUES,
+    "electron": _NODE_VALUES,
+    "tsx": _NODE_VALUES + ["--tsconfig", "--ignore", "--include", "--exclude"],
+    "ts-node": _TS_NODE_VALUES,
+    "ts-node-esm": _TS_NODE_VALUES,
+    "ts-node-dev": _TS_NODE_VALUES + ["--watch", "--ignore-watch", "--debounce", "--interval"],
     "nodemon": ["-w", "--watch", "-e", "--ext", "-i", "--ignore", "--config", "-d", "--delay", "-s", "--signal",
                 "-P", "--polling-interval"],
     "babel-node": ["--presets", "--plugins", "--extensions", "-x", "--config-file", "--ignore", "--only", "--env-name",
@@ -392,6 +397,7 @@ VALUE_FLAGS = {
             "--conditions"],
     "deno run": ["-c", "--config", "--import-map", "--lock", "--cert", "--location", "--seed", "--v8-flags", "-L",
                  "--log-level"],
+    "pm2-runtime": [],
 }
 
 
@@ -400,6 +406,70 @@ def test_a_value_flag_consumes_its_value_for_its_runner(runner, flag):
     assert _roots(f"{runner} {flag} somevalue ./server.js") == {"server.js"}, (runner, flag)
     # and the value is never the entry: a runnable file there is a doubt, not a root
     assert _roots(f"{runner} {flag} ./legacy.js ./server.js") == set(), (runner, flag)
+
+# ── Review round 6: the command text is an allowlist too ─────────────────────
+
+# Every character a shell gives meaning to, and whitespace other than a space.
+_UNREAD = "$`*?~%#()<>{}[]!^" + chr(10) + chr(9) + chr(13)
+
+
+@pytest.mark.parametrize("char", list(_UNREAD), ids=[f"U+{ord(c):04X}" for c in _UNREAD])
+def test_a_character_the_shell_interprets_makes_the_command_unread(char):
+    """Anywhere in the command: before the entry, after it, or in another segment."""
+    assert _roots("node server.js") == {"server.js"}
+    assert _roots(f"node server.js ; echo x{char}y") == set(), repr(char)
+    assert _roots(f"echo x{char}y ; node server.js") == set(), repr(char)
+    assert _roots(f"node server.js --flag a{char}b") == set(), repr(char)
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+@pytest.mark.parametrize("inside", ["&&", ";", "||", "|", "&"])
+def test_an_operator_inside_quotes_is_not_an_operator(quote, inside):
+    assert _roots(f"echo {quote}{inside}{quote} node server.js") == set(), (quote, inside)
+    assert _roots(f"echo {quote}a {inside} node server.js{quote}") == set(), (quote, inside)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # a backslash is a path separator inside a word and nothing else
+        "\\cd lib && node server.js",
+        "\\command cd lib && node server.js",
+        "\\builtin cd lib && node server.js",
+        "node server\\ extra.js",
+        'echo "a \\" && node server.js \\" b"',
+        "node server.js \\; echo x",
+        "node .\\\\server.js",
+        # a shell word behind an assignment, and in a later segment
+        "FOO=1 eval cd lib; node server.js",
+        "FOO=1 command cd lib && node server.js",
+        "FOO=1 builtin cd lib && node server.js",
+        "FOO=1 source ./env.sh && node server.js",
+        "true && eval cd lib && node server.js",
+        "node server.js; set -e",
+        # a newline separates commands in a shell and is whitespace to the lexer
+        "node legacy.js\ncd lib && node server.js",
+    ],
+)
+def test_shell_syntax_the_lexer_would_misread_is_not_read(command):
+    assert _roots(command) == set(), command
+
+
+def test_the_wrapper_order_npx_then_cross_env():
+    assert _roots("npx cross-env A=1 node server.js") == {"server.js"}
+    assert _roots("npx -y cross-env A=1 B=2 node server.js") == {"server.js"}
+    assert _roots("A=1 npx nodemon server.js") == {"server.js"}
+    assert _roots("cross-env A=1 npx nodemon server.js") == set()  # not a form the reader knows
+
+
+def test_every_value_flag_is_written_out_for_every_runner():
+    """`VALUE_FLAGS` below is the whole table, not a sample: a flag added to or
+    dropped from a runner's `value` set fails here until this list says the same."""
+    table = _entry_points._SCRIPT_RUNNERS
+    assert {name.split()[0] for name in VALUE_FLAGS} == set(table), sorted(table)
+    for name, flags in VALUE_FLAGS.items():
+        assert set(flags) == set(table[name.split()[0]]["value"]), name
+        assert len(flags) == len(set(flags)), name
 
 
 # ── The reader, from manifest text (no index build) ──────────────────────────
@@ -426,7 +496,7 @@ def _entries(files: dict[str, str]) -> set[str]:
     "manifest,roots",
     [
         ({"scripts": {"start": "node server.js"}}, {"server.js"}),
-        ({"scripts": {"start": "node .\\\\server.js"}}, {"server.js"}),
+        ({"scripts": {"start": "node .\\server.js"}}, {"server.js"}),
         ({"scripts": {"a": "eslint server.js", "b": "node lib/server.js"}}, {"lib/server.js"}),
         ({"scripts": {"start": "cd lib && node server.js"}}, set()),
         ({"scripts": "node server.js"}, set()),

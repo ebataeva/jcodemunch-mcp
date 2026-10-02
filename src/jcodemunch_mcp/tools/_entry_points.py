@@ -193,7 +193,7 @@ _NODE_FLAGS = frozenset({
     "--enable-source-maps", "--experimental-modules", "--experimental-json-modules",
     "--experimental-vm-modules", "--experimental-strip-types", "--experimental-specifier-resolution",
     "--harmony", "--expose-gc", "--preserve-symlinks", "--abort-on-uncaught-exception",
-    "--max-old-space-size", "--stack-size", "--no-experimental-fetch",
+    "--max-old-space-size", "--stack-size",
 })
 _NODE_VALUE = frozenset({
     "-C", "--conditions", "--watch-path", "--inspect-port", "--title", "--input-type",
@@ -323,26 +323,34 @@ def _resolve_script_path(
     return None
 
 
-# Characters the shell expands or that this reader would rewrite: a variable, a
-# glob, a tilde, a command substitution. A command holding one is not read.
-_EXPANSION_CHARS = frozenset("$`*?~%")
+# ⚠⚠ The command text is an allowlist too. Six review rounds each found shell
+# syntax a list of exclusions read differently from a shell (`FOO=1 cd sub`,
+# `\cd sub`, a `#` comment, a quoted `"&&"`, a newline, `\"`). So a command is
+# read only when EVERY character is one of these, which leaves no variable, glob,
+# tilde, comment, redirect, subshell, newline or tab to interpret.
+_COMMAND_TEXT = re.compile(r"[A-Za-z0-9_ ./:=@,+\-&|;\"'\\]*")
+# Inside quotes, nothing that could be an operator.
 _QUOTED = re.compile(r"\"([^\"]*)\"|'([^']*)'")
-_OPERATOR_CHARS = frozenset("();<>|&#")
+_QUOTED_TEXT = re.compile(r"[A-Za-z0-9_ ./:=@,+\-]*")
+# A backslash is a path separator and nothing else: inside a word, before a
+# name character. At the start of a word (`\cd`) or before a quote, a space or
+# an operator it is an escape, and the command is not read.
+_BACKSLASH_ESCAPE = re.compile(r"(?:^|[\s\"'&|;])\\|\\(?![A-Za-z0-9_.])")
 
 
 def _script_segments(command: str) -> list[list[str]]:
     """The command as simple commands joined by `&&`, `||` or `;`, or nothing.
 
-    A command that cannot be read whole declares nothing: an unbalanced quote;
-    any other operator (a pipe, a redirect, `&`, parentheses); a shell keyword;
-    a `#` comment; an expansion (`$VAR`, a glob, `~`); an escaped space; and a
-    quoted string that holds an operator character, because the lexer returns
-    `"&&"` and `&&` as the same token.
+    A command that cannot be read whole declares nothing: a character outside
+    `_COMMAND_TEXT`, a backslash that is not a path separator, a quoted string
+    that holds anything but plain text, an unbalanced quote, or an operator
+    other than the three above (`|`, `&`). Shell keywords are checked by the
+    caller, on the program of each segment.
     """
-    if "\\ " in command or any(ch in _EXPANSION_CHARS for ch in command):
+    if not _COMMAND_TEXT.fullmatch(command) or _BACKSLASH_ESCAPE.search(command):
         return []
     for match in _QUOTED.finditer(command):
-        if any(ch in _OPERATOR_CHARS for ch in (match.group(1) or match.group(2) or "")):
+        if not _QUOTED_TEXT.fullmatch(match.group(1) or match.group(2) or ""):
             return []
     lexer = shlex.shlex(command.replace("\\", "/"), posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
@@ -355,7 +363,7 @@ def _script_segments(command: str) -> list[list[str]]:
     for token in tokens:
         if token in _SEQUENCE_OPERATORS:
             segments.append([])
-        elif token.startswith("#") or (token and set(token) <= set("();<>|&")):
+        elif token and set(token) <= set("();<>|&"):
             return []
         else:
             segments[-1].append(token)
@@ -375,16 +383,16 @@ def _strip_prefix(tokens: list[str]) -> Optional[list[str]]:
     i = 0
     while i < len(tokens) and _ENV_ASSIGNMENT.match(tokens[i]):
         i += 1
-    if i < len(tokens) and tokens[i] in ("cross-env", "cross-env-shell"):
-        i += 1
-        while i < len(tokens) and _ENV_ASSIGNMENT.match(tokens[i]):
-            i += 1
     if i < len(tokens) and tokens[i] == "npx":
         i += 1
         while i < len(tokens) and tokens[i] in ("-y", "--yes"):
             i += 1
         if i < len(tokens) and tokens[i].startswith("-"):
             return None  # `npx --workspace=web ...` runs somewhere else
+    if i < len(tokens) and tokens[i] in ("cross-env", "cross-env-shell"):
+        i += 1
+        while i < len(tokens) and _ENV_ASSIGNMENT.match(tokens[i]):
+            i += 1
     return tokens[i:]
 
 
@@ -400,7 +408,7 @@ def _script_entries(
     """
     found: set[str] = set()
     segments = _script_segments(command)
-    if any(segment[0] in _SHELL_WORDS for segment in segments):
+    if any(_program(segment) in _SHELL_WORDS for segment in segments):
         return found  # shell grammar this reader does not model
     for segment in segments:
         if _program(segment) in _CHDIR_COMMANDS:
