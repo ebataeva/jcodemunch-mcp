@@ -221,7 +221,8 @@ def _spec(
     equals=True, trailing=False,
 ):
     """One runner's grammar. ``equals``: it reads `--flag=value`. ``trailing``: it
-    keeps reading its own options after the script (nodemon does; node does not)."""
+    reads options after the script too (nodemon does; node does not), so an
+    option there makes the invocation declare nothing."""
     return {
         "flags": flags, "value": value, "preload": preload,
         "exec_sub": exec_sub, "exec": exec, "suffixes": suffixes, "prefixes": tuple(prefixes),
@@ -240,7 +241,9 @@ _SCRIPT_RUNNERS = {
         _NODE_PRELOAD, exec_sub=frozenset({"watch"}), suffixes=_TS,
     ),
     "ts-node": _TS_NODE_SPEC,
-    "ts-node-esm": _TS_NODE_SPEC,
+    # ts-node-esm 10.9.2, run: `ts-node-esm ./server` fails (ERR_MODULE_NOT_FOUND); ESM
+    # resolution appends nothing, so only the path as written is the entry.
+    "ts-node-esm": _spec(_TS_NODE_FLAGS, _TS_NODE_VALUE, frozenset({"-r", "--require"}), suffixes=("",)),
     # ts-node-dev's own parser (minimist, `lib/bin.js` in 2.0.0) and not ts-node's
     # table: it knows no `--esm`, `--swc`, `--inspect` or camelCase spelling, and
     # a flag it does not know takes the next word or goes to node and fails.
@@ -269,9 +272,12 @@ _SCRIPT_RUNNERS = {
             "-s", "--signal", "-P", "--polling-interval",
         }),
         frozenset({"-r", "--require"}), exec=frozenset({"-x", "--exec"}),
-        # nodemon 3.1.14, run: `--ignore=x` goes to node and fails, and `server.js --cwd sub`
-        # or `server.js --exec "node other.js"` is read after the script.
-        equals=False, trailing=True,
+        # nodemon 3.1.14, run. It hands `--flag=value` to node (`--ignore=x` fails there,
+        # `--inspect=9231` works), reads its options on both sides of the script
+        # (`server.js --cwd sub` runs `sub/server.js`), takes the first argument that
+        # EXISTS as the script, and gives an extensionless one the first `-e` extension.
+        # So: no `=` form, no option after the script, and the path exactly as written.
+        suffixes=("",), equals=False, trailing=True,
     ),
     "babel-node": _spec(
         frozenset({"--inspect", "--inspect-brk"}),
@@ -334,6 +340,8 @@ def _resolve_script_path(
     if joined:
         if "" in suffixes and joined in source_files:
             return joined
+        if joined + ".json" in source_files:
+            return None  # node, ts-node and tsx try `x.json` before `x/index.js`
         # `ts-node ./server` runs `server.js` when `server.ts` is beside it, ts-node-dev
         # runs `server.ts`, and a flag flips ts-node: two candidates declare nothing.
         hits = [joined + s for s in suffixes if s and not s.startswith("/") and joined + s in source_files]
@@ -426,8 +434,8 @@ def _script_entries(
 
     The entry is the first plain argument, when it is path-shaped and resolves
     to an indexed file. Arguments after it belong to the program (`node
-    build.js input.js`) and declare nothing; a runner that reads its own
-    options after the script (nodemon) has them read by the same rule. See the allowlist note above: an
+    build.js input.js`) and declare nothing; for a runner that reads options
+    after the script (nodemon), an option there declares nothing. See the allowlist note above: an
     unknown token in front of the entry makes the invocation declare nothing.
     """
     found: set[str] = set()
@@ -455,10 +463,13 @@ def _script_entries(
             j += 1
             if arg == "--" and entry_token is not None:
                 break  # the rest is the script's
+            if entry_token is not None and arg.startswith("-"):
+                declares = False  # an option after the script: the runner reads it, and it may move the entry
+                continue
             if arg.startswith("-") and arg != "-":
                 flag, eq, value = arg.partition("=")
                 if eq and not spec["equals"]:
-                    declares = False  # this runner hands `--flag=value` to node, which rejects it
+                    declares = False  # this runner hands `--flag=value` to node
                     continue
                 takes_value = flag in spec["value"] or flag in spec["preload"] or flag in spec["exec"]
                 if takes_value:
@@ -485,7 +496,7 @@ def _script_entries(
                     declares = False  # an unknown flag: it may take a value, or change the directory
                 continue
             if entry_token is not None:
-                continue  # an argument of the script, between the runner's trailing options
+                continue  # a plain argument of the script
             if exec_sub_open:
                 exec_sub_open = False
                 if arg in spec["exec_sub"]:

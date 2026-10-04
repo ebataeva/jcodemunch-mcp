@@ -29,15 +29,18 @@
   where `main` decides). The cost is missed roots, which stay visible in the report; L-111 lists them.
   Every wrong root the reviews found came from a fact about one runner that the reader had
   assumed instead of measured: a flag that does or does not take the next word (`node --env-file`
-  does; `bun --config` and `deno run --v8-flags` do not), ts-node-dev given ts-node's flags, nodemon
-  reading its own options AFTER the script (`nodemon server.js --cwd sub`), and the order a runner
-  tries extensions in (`ts-node ./server` runs `server.js` when `server.ts` sits beside it, and
-  ts-node-dev runs `server.ts`). Each is fixed; a path that names two files now declares nothing.
-  The ways left are more facts of that kind not yet run, and shell syntax made of allowed characters
-  that the lexer reads differently from a shell. The no-value and value flags of nodemon,
-  ts-node, ts-node-dev, tsx, babel-node, bun and deno have now been run against the installed binary,
-  and most of node's; electron and pm2-runtime have not been run. Two contrived commands of the second kind still root a file (`true ||
-  node x.js`, `./tools/node x.js`); L-111 records them.
+  does; `bun --config` and `deno run --v8-flags` do not), ts-node-dev given ts-node's flags, and how
+  a runner finds its script: nodemon reads options on both sides of it (`nodemon server.js --cwd
+  sub`), takes the first argument that exists and gives an extensionless one the first `-e`
+  extension; ts-node and tsx try `.js` before `.ts` and ts-node-dev the reverse; node tries `x.json`
+  before `x/index.js`; ts-node-esm appends nothing. So for nodemon the script is the path exactly as
+  written, with no option after it; an extensionless path that names more than one indexed file, or
+  sits beside a `.json` of the same stem, declares nothing. Each shape above was run against the
+  installed runner (`evidence/l102_round8_real.txt`), and so was every flag in the tables of nodemon,
+  ts-node, ts-node-dev, tsx, babel-node, bun and deno and most of node's; electron and pm2-runtime
+  were not run. The ways left are more facts of that kind not yet run, and shell syntax made of
+  allowed characters that the lexer reads differently from a shell; two contrived commands of the
+  second kind still root a file (`true || node x.js`, `./tools/node x.js`), and L-111 records them.
   What moves besides the two lists: `get_dead_code_v2` counts script-run files in
   `entry_points_detected` and lists them in `_meta.package_json_entries`, so a JS repository whose only
   roots are script-run files leaves the zero-entry-point path (`diagnostics.degraded` and its

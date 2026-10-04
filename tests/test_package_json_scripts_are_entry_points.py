@@ -382,10 +382,15 @@ def test_more_doubts_declare_nothing(command):
 
 def test_each_runner_appends_only_its_own_extensions():
     files = frozenset({"package.json", "worker.ts", "job.js"})
-    for runner in ("node", "nodejs", "electron", "nodemon", "babel-node", "pm2-runtime"):
+    for runner in ("node", "nodejs", "electron", "babel-node", "pm2-runtime"):
         assert _roots(f"{runner} ./worker", files=files) == set(), runner
         assert _roots(f"{runner} ./job", files=files) == {"job.js"}, runner
-    for runner in ("ts-node", "ts-node-esm", "ts-node-dev", "tsx"):
+    # nodemon picks the extension from `-e`, and ESM resolution appends none
+    for runner in ("nodemon", "ts-node-esm"):
+        assert _roots(f"{runner} ./worker", files=files) == set(), runner
+        assert _roots(f"{runner} ./job", files=files) == set(), runner
+        assert _roots(f"{runner} ./job.js", files=files) == {"job.js"}, runner
+    for runner in ("ts-node", "ts-node-dev", "tsx"):
         assert _roots(f"{runner} ./worker", files=files) == {"worker.ts"}, runner
 
 
@@ -655,20 +660,32 @@ def test_the_deletion_investigator_reads_the_server_as_a_live_importer(tmp_path)
 @pytest.mark.parametrize(
     "command, expected",
     [
-        # nodemon 3.1.14 reads its own options after the script
+        # nodemon 3.1.14 reads its own options after the script (`--cwd`, `--exec`, `-e`)
+        # and leaves node's there in the script's argv: any option after it declares nothing
         ("nodemon server.js --cwd lib", set()),
         ("nodemon server.js --port 3000", set()),
-        ("nodemon server.js --watch lib", {"server.js"}),
-        ("nodemon server.js --exec babel-node", {"server.js"}),
-        ('nodemon legacy.js --exec "node server.js"', {"server.js"}),
-        ('nodemon server.js -x "node legacy.js"', {"legacy.js"}),
+        ("nodemon server.js --watch lib", set()),
+        ("nodemon server.js --exec babel-node", set()),
+        ('nodemon legacy.js --exec "node server.js"', set()),
+        ('nodemon server.js -x "node legacy.js"', set()),
+        ("nodemon server.js -r ./legacy.js", set()),
+        ("nodemon server.js --require ./legacy.js", set()),
+        ("nodemon server.js -e ts", set()),
+        # before the script they are read
+        ("nodemon -r ./legacy.js server.js", {"legacy.js", "server.js"}),
+        ("nodemon --exec babel-node server.js", {"server.js"}),
+        ('nodemon --exec "node legacy.js" server.js', {"legacy.js"}),
+        # nodemon takes the first argument that exists, and expands an extensionless one
+        ("nodemon ./server ./legacy.js", set()),
+        ("nodemon -e ts ./server", set()),
         ("nodemon server.js -- --cwd lib", {"server.js"}),
         ("nodemon server.js legacy.js", {"server.js"}),
         ("nodemon server.js production", {"server.js"}),
         # the `=` form is unambiguous where the runner reads it: the value is a value
         ("node --env-file=config.js server.js", {"server.js"}),
         ("node --env-file config.js server.js", set()),
-        # and hands `--flag=value` to node, which rejects it
+        # and hands `--flag=value` to node: `--ignore=x` fails there, `--inspect=9231` works
+        ("nodemon --inspect=9231 server.js", set()),
         ("nodemon --ignore=legacy.js server.js", set()),
         ("nodemon --exec=node server.js", set()),
         # node stops at the script: what follows is the script's
@@ -683,7 +700,7 @@ def test_options_after_the_script_and_the_equals_form_are_per_runner(command, ex
     assert _roots(command) == expected, command
 
 
-@pytest.mark.parametrize("runner", ["ts-node", "ts-node-esm", "ts-node-dev", "tsx"])
+@pytest.mark.parametrize("runner", ["ts-node", "ts-node-dev", "tsx"])
 def test_an_extensionless_path_that_names_two_files_declares_nothing(runner):
     """ts-node and tsx run `server.js` when `server.ts` sits beside it; ts-node-dev
     runs `server.ts`; `--prefer-ts-exts` flips ts-node. Two candidates are not decided."""
@@ -711,3 +728,12 @@ def test_every_shell_word_in_any_segment_makes_the_command_unread():
     for word in SHELL_WORDS:
         assert _roots(f"{word} x; node server.js") == set(), word
         assert _roots(f"node server.js && {word} x") == set(), word
+
+
+@pytest.mark.parametrize("runner", ["node", "ts-node", "tsx"])
+def test_a_json_file_beside_a_directory_of_the_same_stem_declares_nothing(runner):
+    """`require.resolve('./x')` is `x.json` when both `x.json` and `x/index.js` exist (node 24, run)."""
+    index = "x/index.js" if runner == "node" else "x/index.ts"
+    files = frozenset({"package.json", "x.json", index})
+    assert _roots(f"{runner} ./x", files=files) == set()
+    assert _roots(f"{runner} ./x", files=files - {"x.json"}) != set()
