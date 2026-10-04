@@ -2633,12 +2633,29 @@ def index_folder(
         # index covers other subdirs — incremental's "changed/new/deleted"
         # accounting against the full existing file set would mis-attribute
         # carryover files as deleted.
-        if incremental and existing_index is not None and _merge_with_existing is None:
+        #
+        # Exception: a RE-walk of a subdir already recorded in `source_roots`.
+        # Scoping `deleted` to `walk_prefix` removes the mis-attribution, and
+        # `incremental_save` leaves every unlisted (carried) file untouched, so
+        # a scheduled `index <subdir>` no longer re-parses the whole subdir.
+        _subdir_incremental = (
+            _merge_with_existing is not None
+            and not _is_branch_delta
+            and walk_prefix in (getattr(_merge_with_existing, "source_roots", None) or [])
+        )
+        if incremental and existing_index is not None and (
+            _merge_with_existing is None or _subdir_incremental
+        ):
             changed, new, deleted, computed_hashes, updated_mtimes = (
                 store.detect_changes_with_mtimes(
                     owner, repo_name, file_mtimes, _hash_file
                 )
             )
+            if _subdir_incremental:
+                deleted = [
+                    fp for fp in deleted
+                    if not _file_outside_walk_prefix(fp, walk_prefix)
+                ]
 
             # Subset refresh (paths=[...]): detect_changes_with_mtimes diffs the
             # supplied subset against the ENTIRE stored index, so every unlisted

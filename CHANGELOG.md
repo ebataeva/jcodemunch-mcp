@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A repeat `index <subdir>` inside a git root is incremental (#961).** A subdirectory of a git
+  working tree is indexed under the git root's identity and walked as `walk_prefix`; the collision
+  guard sets `_merge_with_existing` so files outside the prefix carry over, and the incremental
+  branch ran only when `_merge_with_existing` was `None`. So no repeat subdir walk could reach the
+  no-change path: every run re-parsed the whole subdirectory and saved it through the merge, with
+  `performed_incremental: false` (93 of 93 scheduled runs in the report). #504 fixed the same gate
+  for a repeat full-root walk. The incremental diff now runs for a subdir walk whose prefix is
+  already recorded in `source_roots`, with `deleted` scoped to that prefix: a carried file outside it
+  is not the subdir walk's to prune, and `incremental_save` leaves every file it is not told about
+  untouched. A first walk of a new prefix, a branch delta, and any run that turns `incremental` off
+  (a parser upgrade, an invalidated cache) still take the merge path. Measured on a copy of the
+  reporter's storage (17 indexes, 741 files under the walked prefix): 4.8 s before,
+  2.9 s after with nothing changed; with one file edited, one added and one deleted the result
+  is identical to a fresh build (file set, hashes, mtimes and symbol ids).
+
 ## [1.108.327] - 2026-10-02 - a local model path is refused when the installed sentence-transformers would run its code
 
 ### Security
