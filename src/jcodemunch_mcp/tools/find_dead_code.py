@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import fnmatch
-import json
 import logging
 import re
 import time
@@ -13,7 +12,7 @@ from ..storage import IndexStore
 from ..parser.imports import resolve_specifier
 from ._utils import index_status_to_tool_error, resolve_repo
 from ..parser.context._route_utils import ENTRY_POINT_DECORATOR_RE
-from ._entry_points import entry_point_spec
+from ._entry_points import entry_point_spec, package_json_entries as _package_json_entries
 from ._runtime_discovery import discover_dynamic_packages
 from ._corpus_adequacy import UNPROVEN_CEILING, assess_corpus
 from ._dynamic_boundary import FILES_CAP as DYNAMIC_FILES_CAP, DynamicBoundary
@@ -124,68 +123,6 @@ def unmatched_patterns(patterns: Optional[list[str]], source_files) -> list[str]
         return []
     files = list(source_files)
     return [p for p in patterns if not any(_matches_any_pattern(f, [p]) for f in files)]
-
-
-def _package_json_entries(index, store, owner: str, repo_name: str) -> set[str]:
-    """Return source files referenced by any ``package.json``'s ``main`` /
-    ``module`` / ``exports`` / ``bin`` field. JS-library equivalent of the
-    Python ``app.py``/``main.py`` filename heuristic. (Backported from
-    get_dead_code_v2 in v1.80.8 — sverklo bench parity.)
-    """
-    entries: set[str] = set()
-    source_files = frozenset(index.source_files)
-    for f in index.source_files:
-        fn = f.replace("\\", "/").rsplit("/", 1)[-1]
-        if fn != "package.json":
-            continue
-        content = store.get_file_content(owner, repo_name, f)
-        if not content:
-            continue
-        try:
-            pkg = json.loads(content)
-        except (ValueError, TypeError):
-            continue
-        if not isinstance(pkg, dict):
-            continue
-        candidates: list[str] = []
-        for key in ("main", "module", "browser"):
-            v = pkg.get(key)
-            if isinstance(v, str):
-                candidates.append(v)
-        exports = pkg.get("exports")
-        if isinstance(exports, str):
-            candidates.append(exports)
-        elif isinstance(exports, dict):
-            def _walk_exports(node):
-                if isinstance(node, str):
-                    candidates.append(node)
-                elif isinstance(node, dict):
-                    for v in node.values():
-                        _walk_exports(v)
-            _walk_exports(exports)
-        bins = pkg.get("bin")
-        if isinstance(bins, str):
-            candidates.append(bins)
-        elif isinstance(bins, dict):
-            candidates.extend(v for v in bins.values() if isinstance(v, str))
-
-        pkg_dir = f.replace("\\", "/").rsplit("/", 1)[0] if "/" in f else ""
-        for cand in candidates:
-            cand = cand.lstrip("./").replace("\\", "/")
-            joined = f"{pkg_dir}/{cand}" if pkg_dir else cand
-            joined = joined.lstrip("/")
-            if joined in source_files:
-                entries.add(joined)
-                continue
-            for ext in ("", ".js", ".ts", ".mjs", ".cjs", ".mts", ".cts",
-                        ".jsx", ".tsx",
-                        "/index.js", "/index.ts", "/index.mjs",
-                        "/index.cjs"):
-                trial = joined + ext
-                if trial in source_files:
-                    entries.add(trial)
-                    break
-    return entries
 
 
 def _has_entry_point_decorator(sym: dict) -> bool:

@@ -19,6 +19,56 @@
   2.9 s after with nothing changed; with one file edited, one added and one deleted the result
   is identical to a fresh build (file set, hashes, mtimes and symbol ids).
 
+- **A file a `package.json` script runs is an entry point.** `find_dead_code` and `get_dead_code_v2`
+  read `main`, `module`, `browser`, `exports` and `bin` from the manifest and not `scripts`, so a server
+  started by `"start": "node server.js"` has no importer by construction and was reported dead at
+  confidence 1.0, with everything only it imports reported as `all_importers_dead`. The deletion
+  investigator then read a name that server imports as imported only by an unreachable file. The reader
+  also existed twice, one copy in each tool with the same logic; it is one function in
+  `tools/_entry_points.py` now.
+  A wrong root is the worse error here, because it removes a dead file from the report with no symptom,
+  and review rounds kept finding a spelling a list of exclusions had not named. So the rule is an
+  allowlist. A script roots a file only in the form `[NAME=value] [npx | cross-env] RUNNER [flags the
+  runner's table knows] PATH`, where the runner is one of `node`, `nodejs`, `nodemon`, `ts-node`,
+  `ts-node-esm`, `ts-node-dev`, `tsx`, `bun`, `deno`, `babel-node`, `electron`, `pm2-runtime`, and the
+  path has a `/` or a `.` in it. The command text is an allowlist as well: a script is read only when
+  every character is a letter, a digit, a space or one of `_ . / : = @ , + - & | ; " ' \`, and a
+  backslash only as a path separator inside a word.
+  Flags are read per runner, because `--watch` takes a value for nodemon and none for node. A module
+  named by `--require`, `--import` or `--loader` is a root when it is a relative path. Everything else
+  declares nothing: a file named to a linter or a test runner, the arguments after the entry, a flag
+  the table does not know, a bare word (`deno lint`, `bun run build`, `node server`), any other wrapper
+  (`yarn`, `pnpm --filter`, `sudo`), a `cd` anywhere before the runner, a pipe, a redirect, a shell
+  keyword, any other character a shell interprets (`$`, `*`, `?`, `~`, `#`, `%`, a bracket, a newline)
+  anywhere in the command, and a directory that has its own `package.json` (`node .`,
+  where `main` decides). The cost is missed roots, which stay visible in the report; L-111 lists them.
+  Every wrong root the reviews found came from a fact about one runner that the reader had
+  assumed instead of measured: a flag that does or does not take the next word (`node --env-file`
+  does; `bun --config` and `deno run --v8-flags` do not), ts-node-dev given ts-node's flags, and how
+  a runner finds its script: nodemon reads options on both sides of it (`nodemon server.js --cwd
+  sub`), takes the first argument that exists, gives an extensionless one the first `-e`
+  extension; ts-node and tsx try `.js` before `.ts` and ts-node-dev the reverse; node tries `x.js`,
+  then `x.json`, then `x/index.js`, and ts-node tries `x.json` before `x.ts`; ESM resolution
+  (`ts-node-esm`, `ts-node --esm`, node's `--import` and `--loader`, tsx's `--loader`) appends nothing. So for nodemon
+  the script is the path exactly as written, with no option after it; an extensionless path that
+  names more than one indexed file, or a `.json` the runner tries first, declares nothing; and an
+  ESM preload that does not resolve as written (no extension, or not indexed) makes the command
+  declare nothing. Each shape above was run against the
+  installed runner (`evidence/l102_round8_real.txt`), and so was every flag in the tables of nodemon,
+  ts-node, ts-node-dev, tsx, babel-node, bun and deno and most of node's; electron and pm2-runtime
+  were not run. The ways left are more facts of that kind not yet run, and shell syntax made of
+  allowed characters that the lexer reads differently from a shell; two contrived commands of the
+  second kind still root a file (`true || node x.js`, `./tools/node x.js`), and L-111 records them.
+  What moves besides the two lists: `get_dead_code_v2` counts script-run files in
+  `entry_points_detected` and lists them in `_meta.package_json_entries`, so a JS repository whose only
+  roots are script-run files leaves the zero-entry-point path (`diagnostics.degraded` and its
+  `framework_warning`), and `get_repo_health`'s `dead_code_pct` follows. `check_delete_safe`, the
+  deletion investigator, `digest` and `assemble_task_context` read these tools and follow too.
+  Measured on the 11 repositories indexed on this machine that hold a `package.json`: 40 files become
+  roots, each the first argument of a runner (`evidence/l102_measure.txt`). Still reported dead, and
+  still wrong: `index.js` in a tree with no `package.json`, and a Python script with no main guard
+  (LEDGER L-111).
+
 ## [1.108.327] - 2026-10-02 - a local model path is refused when the installed sentence-transformers would run its code
 
 ### Security
