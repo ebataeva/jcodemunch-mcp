@@ -737,3 +737,35 @@ def test_a_json_file_beside_a_directory_of_the_same_stem_declares_nothing(runner
     files = frozenset({"package.json", "x.json", index})
     assert _roots(f"{runner} ./x", files=files) == set()
     assert _roots(f"{runner} ./x", files=files - {"x.json"}) != set()
+
+
+# -- Review round 10: ESM resolution appends no extension (node 24, ts-node 10.9.2, run) --
+
+
+@pytest.mark.parametrize(
+    "command, expected",
+    [
+        # `node --import ./b x.js` fails with ERR_MODULE_NOT_FOUND: it runs nothing
+        ("node --import ./preload server.js", set()),
+        ("node --loader ./preload server.js", set()),
+        ("node --experimental-loader ./preload server.js", set()),
+        ("node --import ./preload.js server.js", {"preload.js", "server.js"}),
+        # CommonJS `-r` appends `.js`
+        ("node -r ./preload server.js", {"preload.js", "server.js"}),
+        # tsx resolves the path itself
+        ("tsx --import ./preload server.js", {"preload.js", "server.js"}),
+        # `ts-node --esm ./a` fails the same way; the flag is unknown here
+        ("ts-node --esm ./server", set()),
+        ("ts-node --esm ./server.ts", set()),
+    ],
+)
+def test_esm_resolution_appends_no_extension(command, expected):
+    assert _roots(command) == expected, command
+
+
+def test_a_json_file_shadows_only_what_the_runner_tries_after_it():
+    """node tries `y.js` before `y.json` (run: `node ./y` ran `y.js`); ts-node tries `.json` before `.ts`."""
+    files = frozenset({"package.json", "y.js", "y.json", "z.ts", "z.json"})
+    assert _roots("node ./y", files=files) == {"y.js"}
+    assert _roots("ts-node ./z", files=files) == set()
+    assert _roots("ts-node ./z.ts", files=files) == {"z.ts"}

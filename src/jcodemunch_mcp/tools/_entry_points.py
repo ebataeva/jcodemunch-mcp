@@ -200,10 +200,13 @@ _NODE_VALUE = frozenset({
     "--env-file", "--unhandled-rejections",
 })
 _NODE_PRELOAD = frozenset({"-r", "--require", "--import", "--loader", "--experimental-loader"})
+_NODE_ESM_PRELOAD = frozenset({"--import", "--loader", "--experimental-loader"})
 # ts-node's pretty-printing flag is deliberately absent: tests/test_tectonic_temporal_signal.py
 # reads that literal anywhere under src/ as a git format argument.
 _TS_NODE_FLAGS = frozenset({
-    "--files", "-T", "--transpile-only", "--transpileOnly", "--esm", "--swc", "-H", "--compiler-host",
+    # `--esm` is absent: ts-node 10.9.2 then resolves the entry as ESM, which appends no
+    # extension, so the flag is unknown here and the command declares nothing.
+    "--files", "-T", "--transpile-only", "--transpileOnly", "--swc", "-H", "--compiler-host",
     "--skip-project", "--skipProject", "--skip-ignore", "--prefer-ts-exts", "--log-error",
     "--emit", "--type-check", "--typeCheck",
 })
@@ -340,11 +343,13 @@ def _resolve_script_path(
     if joined:
         if "" in suffixes and joined in source_files:
             return joined
-        if joined + ".json" in source_files:
-            return None  # node, ts-node and tsx try `x.json` before `x/index.js`
         # `ts-node ./server` runs `server.js` when `server.ts` is beside it, ts-node-dev
         # runs `server.ts`, and a flag flips ts-node: two candidates declare nothing.
         hits = [joined + s for s in suffixes if s and not s.startswith("/") and joined + s in source_files]
+        if joined + ".json" in source_files and (not hits or ".ts" in suffixes):
+            # node tries `x.js`, then `x.json`, then `x/index.js`; ts-node tries
+            # `x.json` before `x.ts`. A same-stem `.json` there is what runs.
+            return None
         if hits:
             return hits[0] if len(hits) == 1 else None
     if (f"{joined}/package.json" if joined else "package.json") in source_files:
@@ -485,7 +490,17 @@ def _script_entries(
                         # `-r esm`, `--import tsx`: a bare name is a package in
                         # node_modules, never `./esm`. Only a relative path is ours.
                         if value.startswith(("./", "../")):
-                            hit = _resolve_script_path(pkg_dir, value, source_files, own_main, spec["suffixes"])
+                            # node resolves `--import`/`--loader` as ESM, which appends
+                            # nothing (`node --import ./b x.js` fails, node 24, run).
+                            esm = flag in _NODE_ESM_PRELOAD and spec["suffixes"] == _JS
+                            hit = _resolve_script_path(
+                                pkg_dir, value, source_files, own_main, ("",) if esm else spec["suffixes"]
+                            )
+                            if esm and not hit and _resolve_script_path(
+                                pkg_dir, value, source_files, own_main, spec["suffixes"]
+                            ):
+                                declares = False  # the command fails at start; it runs nothing
+                                continue
                             if hit:
                                 preloads.add(hit)
                     elif not eq and value.endswith(_RUNNABLE_SUFFIXES) and _resolve_script_path(

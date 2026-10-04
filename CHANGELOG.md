@@ -31,11 +31,13 @@
   assumed instead of measured: a flag that does or does not take the next word (`node --env-file`
   does; `bun --config` and `deno run --v8-flags` do not), ts-node-dev given ts-node's flags, and how
   a runner finds its script: nodemon reads options on both sides of it (`nodemon server.js --cwd
-  sub`), takes the first argument that exists and gives an extensionless one the first `-e`
-  extension; ts-node and tsx try `.js` before `.ts` and ts-node-dev the reverse; node tries `x.json`
-  before `x/index.js`; ts-node-esm appends nothing. So for nodemon the script is the path exactly as
-  written, with no option after it; an extensionless path that names more than one indexed file, or
-  sits beside a `.json` of the same stem, declares nothing. Each shape above was run against the
+  sub`), takes the first argument that exists, gives an extensionless one the first `-e`
+  extension; ts-node and tsx try `.js` before `.ts` and ts-node-dev the reverse; node tries `x.js`,
+  then `x.json`, then `x/index.js`, and ts-node tries `x.json` before `x.ts`; ESM resolution
+  (`ts-node-esm`, `ts-node --esm`, node's `--import` and `--loader`) appends nothing. So for nodemon
+  the script is the path exactly as written, with no option after it; an extensionless path that
+  names more than one indexed file, or a `.json` the runner tries first, declares nothing; and an
+  ESM path without its extension makes the command declare nothing, because it fails at start. Each shape above was run against the
   installed runner (`evidence/l102_round8_real.txt`), and so was every flag in the tables of nodemon,
   ts-node, ts-node-dev, tsx, babel-node, bun and deno and most of node's; electron and pm2-runtime
   were not run. The ways left are more facts of that kind not yet run, and shell syntax made of
