@@ -769,3 +769,19 @@ def test_a_json_file_shadows_only_what_the_runner_tries_after_it():
     assert _roots("node ./y", files=files) == {"y.js"}
     assert _roots("ts-node ./z", files=files) == set()
     assert _roots("ts-node ./z.ts", files=files) == {"z.ts"}
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # node 24, run: each fails at start with ERR_MODULE_NOT_FOUND
+        "node --import ./q server.js",  # only q.mjs exists
+        "node --import ./t server.js",  # only t.ts exists
+        "tsx --loader ./preload server.js",
+        # a preload that is not indexed is not decided either
+        "node --import ./missing.js server.js",
+    ],
+)
+def test_an_esm_preload_that_does_not_resolve_as_written_declares_nothing(command):
+    files = FILES | {"q.mjs", "t.ts"}
+    assert _roots(command, files=files) == set(), command

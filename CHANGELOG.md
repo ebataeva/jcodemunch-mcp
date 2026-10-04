@@ -34,10 +34,11 @@
   sub`), takes the first argument that exists, gives an extensionless one the first `-e`
   extension; ts-node and tsx try `.js` before `.ts` and ts-node-dev the reverse; node tries `x.js`,
   then `x.json`, then `x/index.js`, and ts-node tries `x.json` before `x.ts`; ESM resolution
-  (`ts-node-esm`, `ts-node --esm`, node's `--import` and `--loader`) appends nothing. So for nodemon
+  (`ts-node-esm`, `ts-node --esm`, node's `--import` and `--loader`, tsx's `--loader`) appends nothing. So for nodemon
   the script is the path exactly as written, with no option after it; an extensionless path that
   names more than one indexed file, or a `.json` the runner tries first, declares nothing; and an
-  ESM path without its extension makes the command declare nothing, because it fails at start. Each shape above was run against the
+  ESM preload that does not resolve as written (no extension, or not indexed) makes the command
+  declare nothing. Each shape above was run against the
   installed runner (`evidence/l102_round8_real.txt`), and so was every flag in the tables of nodemon,
   ts-node, ts-node-dev, tsx, babel-node, bun and deno and most of node's; electron and pm2-runtime
   were not run. The ways left are more facts of that kind not yet run, and shell syntax made of

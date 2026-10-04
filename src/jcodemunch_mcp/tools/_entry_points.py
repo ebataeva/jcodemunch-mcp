@@ -492,14 +492,13 @@ def _script_entries(
                         if value.startswith(("./", "../")):
                             # node resolves `--import`/`--loader` as ESM, which appends
                             # nothing (`node --import ./b x.js` fails, node 24, run).
-                            esm = flag in _NODE_ESM_PRELOAD and spec["suffixes"] == _JS
+                            # tsx resolves `--import` itself but not `--loader` (run).
+                            esm = flag in _NODE_ESM_PRELOAD and (spec["suffixes"] == _JS or flag != "--import")
                             hit = _resolve_script_path(
                                 pkg_dir, value, source_files, own_main, ("",) if esm else spec["suffixes"]
                             )
-                            if esm and not hit and _resolve_script_path(
-                                pkg_dir, value, source_files, own_main, spec["suffixes"]
-                            ):
-                                declares = False  # the command fails at start; it runs nothing
+                            if esm and not hit:
+                                declares = False  # unindexed, or the command fails at start: not decided
                                 continue
                             if hit:
                                 preloads.add(hit)
